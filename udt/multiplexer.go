@@ -150,7 +150,7 @@ func (m *multiplexer) handleInbound(ph packetHolder) {
 	case *handshakePacket:
 		// Only process packet if version and type are supported
 		log.Println("Got handshake packet")
-		if p.udtVer == 4 && p.sockType == STREAM {
+		if p.udtVer == 4 && p.sockType == DGRAM {
 			log.Println("Right version and type")
 			s := m.sockets[p.sockId]
 			if p.sockType == init_client_handshake {

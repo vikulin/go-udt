@@ -18,16 +18,14 @@ const (
 	keepalive    = 0x1
 	ack          = 0x2
 	nak          = 0x3
-	unused       = 0x4
+	congestion   = 0x4 // todo
 	shutdown     = 0x5
 	ack2         = 0x6
 	msg_drop_req = 0x7
 
 	// Socket types
-	// Note - these are reversed from the spec, as the C++ implementation of UDT
-	// seems to have them reversed and we want to stay interoperable
 	STREAM = 1
-	DGRAM  = 0 // not supported!
+	DGRAM  = 2
 
 	// No info for info section of header
 	noinfo = 0

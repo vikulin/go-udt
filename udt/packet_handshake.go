@@ -10,7 +10,7 @@ import (
 type handshakePacket struct {
 	h              header
 	udtVer         uint32 // UDT version
-	sockType       uint32 // Socket Type (0 = STREAM or 1 = DGRAM)
+	sockType       uint32 // Socket Type (1 = STREAM or 2 = DGRAM)
 	initPktSeq     uint32 // initial packet sequence number
 	maxPktSize     uint32 // maximum packet size (including UDP/IP headers)
 	maxFlowWinSize uint32 // maximum flow window size

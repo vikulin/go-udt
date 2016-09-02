@@ -17,8 +17,8 @@ const (
 /*
 udtSocket encapsulates a UDT socket between a local and remote address pair, as
 defined by the UDT specification.  udtSocket implements the net.Conn interface
-so that it can be used anywhere that anywhere a stream-oriented network
-connection (like TCP) would be used.
+so that it can be used anywhere that a stream-oriented network connection
+(like TCP) would be used.
 */
 type udtSocket struct {
 	m            *multiplexer // the multiplexer that handles this socket
@@ -83,8 +83,7 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 }
 
 func (s *udtSocket) Close() (err error) {
-	// TODO: implement
-	return
+	return s.m.sockets[s.sockId].Close()
 }
 
 func (s *udtSocket) LocalAddr() net.Addr {
@@ -96,18 +95,15 @@ func (s *udtSocket) RemoteAddr() net.Addr {
 }
 
 func (s *udtSocket) SetDeadline(t time.Time) error {
-	// TODO: implement
-	return nil
+	return s.m.sockets[s.sockId].SetDeadline(t)
 }
 
 func (s *udtSocket) SetReadDeadline(t time.Time) error {
-	// TODO: implement
-	return nil
+	return s.m.sockets[s.sockId].SetReadDeadline(t)
 }
 
 func (s *udtSocket) SetWriteDeadline(t time.Time) error {
-	// TODO: implement
-	return nil
+	return s.m.sockets[s.sockId].SetWriteDeadline(t)
 }
 
 /*******************************************************************************
@@ -161,7 +157,7 @@ func newClientSocket(m *multiplexer, sockId uint32) (s *udtSocket, err error) {
 		initPktSeq:     randUint32(),
 		maxPktSize:     max_packet_size,
 		maxFlowWinSize: 8192, // todo: figure out if/how we should calculate this and/or configure it
-		sockType:       STREAM,
+		sockType:       DGRAM,
 		sockId:         sockId,
 		sockAddr:       raddr.IP,
 		dataOut:        newPacketQueue(),

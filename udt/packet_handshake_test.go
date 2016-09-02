@@ -14,7 +14,7 @@ func TestHandshakePacket(t *testing.T) {
 				dstSockId: 59,
 			},
 			udtVer:         4,
-			sockType:       STREAM,
+			sockType:       DGRAM,
 			initPktSeq:     50,
 			maxPktSize:     1000,
 			maxFlowWinSize: 500,

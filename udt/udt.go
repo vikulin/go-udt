@@ -6,7 +6,7 @@ udt does not implement all of the spec.  In particular, the following are not
 implemented:
 
 - Rendezvous mode
-- DGRAM mode (only streaming is supported)
+- STREAM mode (only UDP is supported)
 
 */
 package udt
