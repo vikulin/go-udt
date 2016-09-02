@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/oxtoacart/go-udt/udt"
+	"./udt"
 	"log"
 	"net"
 	"time"
