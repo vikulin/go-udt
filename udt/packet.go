@@ -10,15 +10,16 @@ import (
 )
 
 const (
-	flag_bit_32 = 1 << 31 // leading bit for distinguishing control from data packets (32 bit version)
-	flag_bit_16 = 1 << 15 // leading bit for distinguishing control from data packets (16 bit version)
+	// Leading bit for distinguishing control from data packets
+	flag_bit_32 = 1 << 31 // 32 bit
+	flag_bit_16 = 1 << 15 // 16 bit
 
 	// Control packet types
 	handshake    = 0x0
 	keepalive    = 0x1
 	ack          = 0x2
 	nak          = 0x3
-	congestion   = 0x4 // todo
+	congestion   = 0x4 // unused
 	shutdown     = 0x5
 	ack2         = 0x6
 	msg_drop_req = 0x7
