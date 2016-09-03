@@ -82,10 +82,18 @@ func (m *multiplexer) newClientSocket() (s *udtSocket, err error) {
 		m.sockets[sid] = s
 	}
 
-	for {
-		s.initHandshake()
-		time.Sleep(200 * time.Millisecond)
-	}
+	s.handshaked = make(chan bool)
+	ticker := time.NewTicker(6 * time.Second)
+	handshake:
+		for {
+			s.initHandshake()
+			select {
+			case <-s.handshaked:
+				break handshake
+			case <-ticker.C:
+			}
+		}
+		ticker.Stop()
 
 	return
 }
@@ -153,7 +161,7 @@ func (m *multiplexer) handleInbound(ph packetHolder) {
 		if p.udtVer == 4 && p.sockType == DGRAM {
 			log.Println("Right version and type")
 			s := m.sockets[p.sockId]
-			if p.sockType == init_client_handshake {
+			if p.reqType > 0 {
 				if s == nil {
 					// create a new udt socket and remember it
 					var err error
@@ -163,6 +171,9 @@ func (m *multiplexer) handleInbound(ph packetHolder) {
 						s.respondInitHandshake()
 					}
 				}
+			} else {
+				log.Println("Handshake done")
+				s.acknowledgeHanshake()
 			}
 
 			if s == nil {

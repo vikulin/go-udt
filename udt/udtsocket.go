@@ -8,10 +8,15 @@ import (
 )
 
 const (
-	sock_state_new              = 0
-	sock_state_handshake_init   = 1
-	sock_state_handshake_finish = 2
-	sock_state_connected        = 3
+	sock_state_init        = iota
+	sock_state_opened      = iota
+	sock_state_listening   = iota
+	sock_state_connecting  = iota
+	sock_state_connected   = iota
+	sock_state_broken      = iota
+	sock_state_closing     = iota
+	sock_state_closed      = iota
+	sock_state_nonexist    = iota
 )
 
 /*
@@ -36,6 +41,7 @@ type udtSocket struct {
 	pktSeq       uint32           // the current packet sequence number
 	currDp       *dataPacket      // currently reading data packet (for partial reads)
 	currDpOffset int              // offset in currIn (for partial reads)
+	handshaked   chan bool
 
 	// The below fields mirror what's seen on handshakePacket
 	udtVer         uint32
@@ -131,7 +137,7 @@ func newServerSocket(m *multiplexer, raddr *net.UDPAddr, p *handshakePacket) (s 
 		m:              m,
 		raddr:          raddr,
 		boundWriter:    &boundUDPWriter{m.conn, raddr},
-		sockState:      sock_state_new,
+		sockState:      sock_state_init,
 		udtVer:         p.udtVer,
 		initPktSeq:     p.initPktSeq,
 		maxPktSize:     p.maxPktSize,
@@ -152,7 +158,7 @@ func newClientSocket(m *multiplexer, sockId uint32) (s *udtSocket, err error) {
 		m:              m,
 		raddr:          raddr,
 		boundWriter:    m.conn,
-		sockState:      sock_state_new,
+		sockState:      sock_state_init,
 		udtVer:         4,
 		initPktSeq:     randUint32(),
 		maxPktSize:     max_packet_size,
@@ -177,11 +183,11 @@ func (s *udtSocket) initHandshake() {
 		initPktSeq:     s.initPktSeq,
 		maxPktSize:     s.maxPktSize,
 		maxFlowWinSize: s.maxFlowWinSize,
-		connType:       1,
+		reqType:        1,
 		sockId:         s.sockId,
 		sockAddr:       s.sockAddr,
 	}
-	s.sockState = sock_state_handshake_init
+	s.sockState = sock_state_connected
 	s.m.ctrlOut <- &p
 }
 
@@ -191,9 +197,13 @@ func (s *udtSocket) respondInitHandshake() {
 			dstSockId: s.sockId,
 		},
 		udtVer:   s.udtVer,
-		sockType: 1,
+		sockType: s.sockType,
 		sockId:   s.sockId,
+		reqType:  -1,
 	}
-	s.sockState = sock_state_handshake_init
 	s.m.ctrlOut <- &p
+}
+
+func (s *udtSocket) acknowledgeHanshake() {
+	close(s.handshaked)
 }

@@ -14,7 +14,7 @@ type handshakePacket struct {
 	initPktSeq     uint32 // initial packet sequence number
 	maxPktSize     uint32 // maximum packet size (including UDP/IP headers)
 	maxFlowWinSize uint32 // maximum flow window size
-	connType       uint32 // connection type (regular or rendezvous)
+	reqType        int32  // connection type (regular(1), rendezvous(0), -1/-2 response)
 	sockId         uint32 // socket ID
 	synCookie      uint32 // SYN cookie
 	sockAddr       net.IP // the IP address of the UDP socket to which this packet is being sent
@@ -47,7 +47,7 @@ func (p *handshakePacket) writeTo(w io.Writer) (err error) {
 	if err := writeBinary(w, p.maxFlowWinSize); err != nil {
 		return err
 	}
-	if err := writeBinary(w, p.connType); err != nil {
+	if err := writeBinary(w, p.reqType); err != nil {
 		return err
 	}
 	if err := writeBinary(w, p.sockId); err != nil {
@@ -89,7 +89,7 @@ func (p *handshakePacket) readFrom(r io.Reader) (err error) {
 	if err = readBinary(r, &p.maxFlowWinSize); err != nil {
 		return
 	}
-	if err = readBinary(r, &p.connType); err != nil {
+	if err = readBinary(r, &p.reqType); err != nil {
 		return
 	}
 	if err = readBinary(r, &p.sockId); err != nil {
