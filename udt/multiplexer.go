@@ -172,21 +172,16 @@ func (m *multiplexer) handleInbound(ph packetHolder) {
 
 			} else {
 				s := m.sockets[dstSockId]
+				if s == nil {
+					return
+				}
 				if p.reqType > 0 {
 					log.Println("Accepting handshake from server")
 					s.respondAcceptHandshake(p)
 
-				} else if s != nil && p.synCookie == s.synCookie {
+				} else p.synCookie == s.synCookie {
 					log.Println("Server acknowledge handshake")
 					s.acknowledgeHanshake()
-				}
-
-				if s == nil {
-					// s may still be nil if we couldn't create a new socket
-					// in this case, we ignore the error
-				} else {
-					// Okay, we have a socket
-
 				}
 			}
 		}
