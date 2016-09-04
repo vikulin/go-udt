@@ -89,7 +89,20 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 }
 
 func (s *udtSocket) Close() (err error) {
-	return s.m.sockets[s.sockId].Close()
+	// todo send shutdown packet
+
+	// Remove from connected socket list
+	s.m.socketsMutex.Lock()
+	defer s.m.socketsMutex.Unlock()
+	delete(s.m.sockets, s.sockId)
+
+	s.sockState = sock_state_closed
+
+	if s.m.mode == mode_client {
+		return s.m.conn.Close()
+	}
+
+	return
 }
 
 func (s *udtSocket) LocalAddr() net.Addr {
@@ -101,15 +114,21 @@ func (s *udtSocket) RemoteAddr() net.Addr {
 }
 
 func (s *udtSocket) SetDeadline(t time.Time) error {
-	return s.m.sockets[s.sockId].SetDeadline(t)
+	// todo set timeout through EXP and SND
+	//return s.m.conn.SetDeadline(t)
+	return nil
 }
 
 func (s *udtSocket) SetReadDeadline(t time.Time) error {
-	return s.m.sockets[s.sockId].SetReadDeadline(t)
+	// todo set timeout through EXP
+	//return s.m.conn.SetReadDeadline(t)
+	return nil
 }
 
 func (s *udtSocket) SetWriteDeadline(t time.Time) error {
-	return s.m.sockets[s.sockId].SetWriteDeadline(t)
+	// todo set timeout through EXP or SND
+	//return s.m.conn.SetWriteDeadline(t)
+	return nil
 }
 
 /*******************************************************************************
@@ -187,23 +206,25 @@ func (s *udtSocket) initHandshake() {
 		sockId:         s.sockId,
 		sockAddr:       s.sockAddr,
 	}
-	s.sockState = sock_state_connected
+	s.sockState = sock_state_connecting
 	s.m.ctrlOut <- &p
 }
 
-func (s *udtSocket) respondInitHandshake() {
-	p := handshakePacket{
-		h: header{
-			dstSockId: s.sockId,
-		},
-		udtVer:   s.udtVer,
-		sockType: s.sockType,
-		sockId:   s.sockId,
-		reqType:  -1,
-	}
-	s.m.ctrlOut <- &p
+func (s *udtSocket) respondInitHandshake(p *handshakePacket) {
+	p.h.dstSockId = p.sockId
+	p.synCookie = s.synCookie
+	s.sockState = sock_state_connecting
+	s.m.ctrlOut <- p
+}
+
+func (s *udtSocket) respondAcceptHandshake(p *handshakePacket) {
+	p.h.dstSockId = p.sockId
+	p.reqType = -1
+	s.sockState = sock_state_connected
+	s.m.ctrlOut <- p
+	close(s.handshaked)
 }
 
 func (s *udtSocket) acknowledgeHanshake() {
-	close(s.handshaked)
+	s.sockState = sock_state_connected
 }

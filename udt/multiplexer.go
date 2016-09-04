@@ -93,7 +93,7 @@ func (m *multiplexer) newClientSocket() (s *udtSocket, err error) {
 			case <-ticker.C:
 			}
 		}
-		ticker.Stop()
+	ticker.Stop()
 
 	return
 }
@@ -160,28 +160,34 @@ func (m *multiplexer) handleInbound(ph packetHolder) {
 		log.Println("Got handshake packet")
 		if p.udtVer == 4 && p.sockType == DGRAM {
 			log.Println("Right version and type")
-			s := m.sockets[p.sockId]
-			if p.reqType > 0 {
-				if s == nil {
-					// create a new udt socket and remember it
-					var err error
-					if s, err = newServerSocket(m, ph.from, p); err == nil {
-						m.sockets[p.sockId] = s
-						log.Println("Responding to handshake")
-						s.respondInitHandshake()
-					}
+			dstSockId := p.h.dstSockId
+			if dstSockId == 0 {
+				dstSockId = p.sockId
+				// create a new udt socket and remember it
+				if s, err := newServerSocket(m, ph.from, p); err == nil {
+					m.sockets[dstSockId] = s
+					log.Printf("Responding to handshake from %s", dstSockId)
+					s.respondInitHandshake(p)
 				}
-			} else {
-				log.Println("Handshake done")
-				s.acknowledgeHanshake()
-			}
 
-			if s == nil {
-				// s may still be nil if we couldn't create a new socket
-				// in this case, we ignore the error
 			} else {
-				// Okay, we have a socket
+				s := m.sockets[dstSockId]
+				if p.reqType > 0 {
+					log.Println("Accepting handshake from server")
+					s.respondAcceptHandshake(p)
 
+				} else if s != nil && p.synCookie == s.synCookie {
+					log.Println("Server acknowledge handshake")
+					s.acknowledgeHanshake()
+				}
+
+				if s == nil {
+					// s may still be nil if we couldn't create a new socket
+					// in this case, we ignore the error
+				} else {
+					// Okay, we have a socket
+
+				}
 			}
 		}
 	}
