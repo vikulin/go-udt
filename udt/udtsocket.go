@@ -181,7 +181,7 @@ func newClientSocket(m *multiplexer, sockId uint32) (s *udtSocket, err error) {
 		udtVer:         4,
 		initPktSeq:     randUint32(),
 		maxPktSize:     max_packet_size,
-		maxFlowWinSize: 8192, // todo: figure out if/how we should calculate this and/or configure it
+		maxFlowWinSize: 25600, // todo: turn tunable (minimum 32)
 		sockType:       DGRAM,
 		sockId:         sockId,
 		sockAddr:       raddr.IP,

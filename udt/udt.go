@@ -86,7 +86,7 @@ func ListenUDT(net string, laddr *_net.UDPAddr) (l Listener, err error) {
 
 const (
 	syn_time              = 10000 // in microseconds
-	max_packet_size       = 576   // todo: make this tunable
+	max_packet_size       = 1500   // todo: make this tunable
 
 	// Multiplexer modes
 	mode_client = 1
