@@ -179,7 +179,7 @@ func (m *multiplexer) handleInbound(ph packetHolder) {
 					log.Println("Accepting handshake from server")
 					s.respondAcceptHandshake(p)
 
-				} else p.synCookie == s.synCookie {
+				} else if p.synCookie == s.synCookie {
 					log.Println("Server acknowledge handshake")
 					s.acknowledgeHanshake()
 				}
