@@ -53,6 +53,7 @@ type packet interface {
 
 type dataPacket struct {
 	seq       uint32
+	msg       uint32
 	ts        uint32
 	dstSockId uint32
 	data      []byte
@@ -71,8 +72,27 @@ func (p *dataPacket) sendTime() (ts uint32) {
 	return p.ts
 }
 
+func (dp *dataPacket) setMsg(boundary uint32, order uint32, msg uint32) {
+	dp.msg = (boundary << 30) | (order << 29) | (msg & 0x1FFFFFFF)
+}
+
+func (dp *dataPacket) getMsgBoundary() uint32{
+	return dp.msg >> 30
+}
+
+func (dp *dataPacket) getMsgOrderFlag() bool {
+	return (1 == ((dp.msg >> 29) & 1))
+}
+
+func (dp *dataPacket) getMsg() uint32 {
+	return dp.msg & 0x1FFFFFFF
+}
+
 func (dp *dataPacket) writeTo(w io.Writer) (err error) {
-	if err := writeBinary(w, dp.seq); err != nil {
+	if err := writeBinary(w, dp.seq & 0x7FFFFFFF); err != nil {
+		return err
+	}
+	if err := writeBinary(w, dp.msg); err != nil {
 		return err
 	}
 	if err := writeBinary(w, dp.ts); err != nil {
@@ -88,6 +108,12 @@ func (dp *dataPacket) writeTo(w io.Writer) (err error) {
 }
 
 func (p *dataPacket) readFrom(r io.Reader) (err error) {
+	if err = readBinary(r, &p.seq); err != nil {
+		return
+	}
+	if err = readBinary(r, &p.msg); err != nil {
+		return
+	}
 	if err = readBinary(r, &p.ts); err != nil {
 		return
 	}
