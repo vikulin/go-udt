@@ -1,4 +1,4 @@
-package udt
+package packet
 
 import (
 	"testing"
@@ -9,8 +9,8 @@ func TestACK2Packet(t *testing.T) {
 		&ack2Packet{
 			h: header{
 				ts:        100,
-				dstSockId: 59,
+				dstSockID: 59,
 			},
-			ackSeqNo:    90,
+			ackSeqNo: 90,
 		}, t)
 }

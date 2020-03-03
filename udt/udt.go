@@ -18,6 +18,7 @@ import (
 	"log"
 	"math"
 	"math/big"
+	"net"
 	_net "net"
 	"sync"
 )
@@ -84,9 +85,27 @@ func ListenUDT(net string, laddr *_net.UDPAddr) (l Listener, err error) {
 	return
 }
 
+// Adapted from https://github.com/hlandau/degoutils/blob/master/net/mtu.go
+const absMaxDatagramSize = 2147483646 // 2**31-2
+func getMaxDatagramSize() int {
+	var m int = 65535
+	ifs, err := net.Interfaces()
+	if err != nil {
+		for i := range ifs {
+			here := ifs[i]
+			if here.Flags&(net.FlagUp|net.FlagLoopback) == net.FlagUp && here.MTU > m {
+				m = ifs[i].MTU
+			}
+		}
+	}
+	if m > absMaxDatagramSize {
+		m = absMaxDatagramSize
+	}
+	return m
+}
+
 const (
-	syn_time              = 10000 // in microseconds
-	max_packet_size       = 1500   // todo: make this tunable
+	syn_time = 10000 // in microseconds
 
 	// Multiplexer modes
 	mode_client = 1
@@ -94,12 +113,13 @@ const (
 )
 
 var (
-	multiplexers      = map[string]*multiplexer{}
-	multiplexersMutex sync.Mutex
-	sids              uint32 // socketId sequence
+	multiplexers sync.Map
+	sids         uint32 // socketId sequence
+	bigMaxUint32 *big.Int
 )
 
 func init() {
+	bigMaxUint32 = big.NewInt(math.MaxUint32)
 	sids = randUint32()
 }
 
@@ -107,7 +127,7 @@ func init() {
 randInt32 generates a secure random value between 0 and the max possible uint32
 */
 func randUint32() (r uint32) {
-	if _r, err := rand.Int(rand.Reader, big.NewInt(math.MaxUint32)); err != nil {
+	if _r, err := rand.Int(rand.Reader, bigMaxUint32); err != nil {
 		log.Fatalf("Unable to generate random uint32: %s", err)
 	} else {
 		r = uint32(_r.Uint64())

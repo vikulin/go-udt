@@ -1,9 +1,9 @@
-package udt
+package packet
 
 import (
+	"log"
 	"net"
 	"testing"
-	"log"
 )
 
 func TestHandshakePacket(t *testing.T) {
@@ -11,7 +11,7 @@ func TestHandshakePacket(t *testing.T) {
 		&handshakePacket{
 			h: header{
 				ts:        100,
-				dstSockId: 59,
+				dstSockID: 59,
 			},
 			udtVer:         4,
 			sockType:       DGRAM,
@@ -19,10 +19,10 @@ func TestHandshakePacket(t *testing.T) {
 			maxPktSize:     1000,
 			maxFlowWinSize: 500,
 			connType:       1,
-			sockId:         59,
+			sockID:         59,
 			synCookie:      978,
 			sockAddr:       net.ParseIP("127.0.0.1"),
 		}, t)
-		
+
 	log.Println((read.(*handshakePacket)).sockAddr)
 }

@@ -1,4 +1,4 @@
-package udt
+package packet
 
 import (
 	"testing"
@@ -9,7 +9,7 @@ func TestKeepAlivePacket(t *testing.T) {
 		&keepAlivePacket{
 			h: header{
 				ts:        100,
-				dstSockId: 59,
+				dstSockID: 59,
 			},
 		}, t)
 }

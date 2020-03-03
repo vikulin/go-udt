@@ -14,30 +14,28 @@ type udtSocketQueue struct {
 
 func (q *udtSocketQueue) push(s *udtSocket) {
 	heap.Push(&q.h, s)
-	q.l += 1
+	q.l++
 }
 
 func (q *udtSocketQueue) peek() (s *udtSocket) {
 	if q.l == 0 {
 		return nil
-	} else {
-		return q.h[0]
 	}
+	return q.h[0]
 }
 
 func (q *udtSocketQueue) pop() (s *udtSocket) {
 	if q.l == 0 {
 		return nil
-	} else {
-		q.l -= 1
-		return heap.Pop(&q.h).(*udtSocket)
 	}
+	q.l--
+	return heap.Pop(&q.h).(*udtSocket)
 }
 
 func newUdtSocketQueue() (q *udtSocketQueue) {
 	q = &udtSocketQueue{}
 	heap.Init(&q.h)
-	return
+	return q
 }
 
 /*

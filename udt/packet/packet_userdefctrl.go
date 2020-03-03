@@ -1,0 +1,41 @@
+package packet
+
+import "errors"
+
+// Structure of packets and functions for writing/reading them
+
+type userDefControlPacket struct {
+	ctrlHeader
+	msgType   uint16 // user-defined message type
+	addtlInfo uint32
+	data      []byte
+}
+
+func (p *userDefControlPacket) WriteTo(buf []byte) (uint, error) {
+	l := len(buf)
+	ol := 16 + len(p.data)
+	if l < ol {
+		return 0, errors.New("packet too small")
+	}
+
+	// Sets the flag bit to indicate this is a control packet
+	endianness.PutUint16(buf[0:1], uint16(ptUserDefPkt)|flagBit16)
+	endianness.PutUint16(buf[2:3], p.msgType) // Write 16 bit reserved data
+
+	endianness.PutUint32(buf[4:7], p.addtlInfo)
+	endianness.PutUint32(buf[8:11], p.ts)
+	endianness.PutUint32(buf[12:15], p.DstSockID)
+
+	copy(buf[16:], p.data)
+
+	return uint(ol), nil
+}
+
+func (p *userDefControlPacket) readFrom(data []byte) (err error) {
+	if p.addtlInfo, err = p.readHdrFrom(data); err != nil {
+		return err
+	}
+	p.data = data[16:]
+
+	return nil
+}

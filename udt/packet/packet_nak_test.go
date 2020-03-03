@@ -1,4 +1,4 @@
-package udt
+package packet
 
 import (
 	"testing"
@@ -9,7 +9,7 @@ func TestNAKPacket(t *testing.T) {
 		&nakPacket{
 			h: header{
 				ts:        100,
-				dstSockId: 59,
+				dstSockID: 59,
 			},
 			cmpLossInfo: 90,
 		}, t)

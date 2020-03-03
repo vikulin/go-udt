@@ -1,4 +1,4 @@
-package udt
+package packet
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ func TestDataPacket(t *testing.T) {
 		&dataPacket{
 			seq:       50,
 			ts:        1409,
-			dstSockId: 90,
+			dstSockID: 90,
 			data:      []byte("Hello UDT World!"),
 		}, t)
 }

@@ -2,21 +2,27 @@ package udt
 
 import (
 	"io"
+	"log"
 	"math"
 	"net"
 	"time"
+
+	"github.com/odysseus654/go-udt/udt/packet"
 )
 
+type sockState int
+
 const (
-	sock_state_init        = iota
-	sock_state_opened      = iota
-	sock_state_listening   = iota
-	sock_state_connecting  = iota
-	sock_state_connected   = iota
-	sock_state_broken      = iota
-	sock_state_closing     = iota
-	sock_state_closed      = iota
-	sock_state_nonexist    = iota
+	sockStateInit sockState = iota
+	//sockStateOpened
+	//sockStateListening
+	sockStateServConnecting
+	//sockStateConnecting
+	sockStateConnected
+	//sockStateBroken
+	//sockStateClosing
+	//sockStateClosed
+	//sockStateNonexist
 )
 
 /*
@@ -30,26 +36,25 @@ type udtSocket struct {
 	raddr        *net.UDPAddr // the remote address
 	boundWriter  io.Writer    // a UDP writer that knows which address to send to
 	created      time.Time    // the time that this socket was created
-	sockState    uint8
-	ackPeriod    uint32           // in microseconds
-	nakPeriod    uint32           // in microseconds
-	expPeriod    uint32           // in microseconds
-	sndPeriod    uint32           // in microseconds
-	ctrlIn       chan *dataPacket // inbound control packets
-	dataIn       chan *dataPacket // inbound data packets
-	dataOut      *packetQueue     // queue of outbound data packets
-	pktSeq       uint32           // the current packet sequence number
-	currDp       *dataPacket      // currently reading data packet (for partial reads)
-	currDpOffset int              // offset in currIn (for partial reads)
-	handshaked   chan bool
+	sockState    sockState
+	isDatagram   bool
+	ackPeriod    uint32                  // in microseconds
+	nakPeriod    uint32                  // in microseconds
+	expPeriod    uint32                  // in microseconds
+	sndPeriod    uint32                  // in microseconds
+	ctrlIn       chan *packet.DataPacket // inbound control packets
+	dataIn       chan *packet.DataPacket // inbound data packets
+	dataOut      *packetQueue            // queue of outbound data packets
+	pktSeq       uint32                  // the current packet sequence number
+	currDp       *packet.DataPacket      // currently reading data packet (for partial reads)
+	currDpOffset int                     // offset in currIn (for partial reads)
 
 	// The below fields mirror what's seen on handshakePacket
 	udtVer         uint32
-	initPktSeq     uint32
+	farPktSeq      uint32
 	maxPktSize     uint32
 	maxFlowWinSize uint32
-	sockType       uint32
-	sockId         uint32
+	sockID         uint32
 	synCookie      uint32
 	sockAddr       net.IP
 }
@@ -77,7 +82,7 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 // TODO: implement ReadFrom and WriteTo for performance(?)
 
 func (s *udtSocket) Write(p []byte) (n int, err error) {
-	s.pktSeq += 1
+	s.pktSeq++
 	dp := &dataPacket{
 		seq:       s.pktSeq,
 		ts:        uint32(time.Now().Sub(s.created) / time.Microsecond),
@@ -143,26 +148,24 @@ func (s *udtSocket) nextSendTime() (ts uint32) {
 	p := s.dataOut.peek()
 	if p != nil {
 		return p.sendTime()
-	} else {
-		return math.MaxUint32
 	}
+	return math.MaxUint32
 }
 
-/**
-newUdtSocket creates a new UDT socket based on an initial handshakePacket.
-*/
-func newServerSocket(m *multiplexer, raddr *net.UDPAddr, p *handshakePacket) (s *udtSocket, err error) {
+// newSocket creates a new UDT socket, which will be configured afterwards as either an incoming our outgoing socket
+func newSocket(m *multiplexer, sockID uint32, raddr *net.UDPAddr) (s *udtSocket, err error) {
+	//	raddr := (m.conn.RemoteAddr()).(*net.UDPAddr)
 	s = &udtSocket{
 		m:              m,
 		raddr:          raddr,
-		boundWriter:    &boundUDPWriter{m.conn, raddr},
-		sockState:      sock_state_init,
-		udtVer:         p.udtVer,
-		initPktSeq:     p.initPktSeq,
-		maxPktSize:     p.maxPktSize,
-		maxFlowWinSize: p.maxFlowWinSize,
-		sockType:       p.sockType,
-		sockId:         p.sockId,
+		boundWriter:    m.conn, // &boundUDPWriter{m.conn, raddr},
+		sockState:      sockStateInit,
+		udtVer:         4,
+		pktSeq:         randUint32(),
+		maxPktSize:     uint32(getMaxDatagramSize()),
+		maxFlowWinSize: 25600, // todo: turn tunable (minimum 32)
+		isDatagram:     true,
+		sockID:         sockID,
 		sockAddr:       raddr.IP,
 		synCookie:      randUint32(),
 		dataOut:        newPacketQueue(),
@@ -171,24 +174,35 @@ func newServerSocket(m *multiplexer, raddr *net.UDPAddr, p *handshakePacket) (s 
 	return
 }
 
-func newClientSocket(m *multiplexer, sockId uint32) (s *udtSocket, err error) {
-	raddr := (m.conn.RemoteAddr()).(*net.UDPAddr)
-	s = &udtSocket{
-		m:              m,
-		raddr:          raddr,
-		boundWriter:    m.conn,
-		sockState:      sock_state_init,
-		udtVer:         4,
-		initPktSeq:     randUint32(),
-		maxPktSize:     max_packet_size,
-		maxFlowWinSize: 25600, // todo: turn tunable (minimum 32)
-		sockType:       DGRAM,
-		sockId:         sockId,
-		sockAddr:       raddr.IP,
-		dataOut:        newPacketQueue(),
+// readHandshake is received when a handshake packet is received without a destination, either as part
+// of a listening response or as a rendezvous connection
+func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, from *net.UDPAddr) bool {
+	if s.sockState != sockStateInit {
+		return false // we're not in a position to receive handshakes
+	}
+	if from != s.raddr {
+		log.Printf("huh? initted with %s but handshake with %s", s.raddr.String(), from.String())
+		return false
+	}
+	/*
+		reqType        int32      // connection type (regular(1), rendezvous(0), -1/-2 response)
+		synCookie      uint32     // SYN cookie
+		sockAddr       net.IP     // the IP address of the UDP socket to which this packet is being sent
+	*/
+	s.udtVer = p.udtVer
+	s.farPktSeq = p.initPktSeq
+	s.isDatagram = p.sockType == packet.TypeDGRAM
+	s.synCookie = randUint32()
+
+	if s.maxPktSize > p.maxPktSize {
+		s.maxPktSize = p.maxPktSize
+	}
+	if s.maxFlowWinSize > p.maxFlowWinSize {
+		s.maxFlowWinSize = p.maxFlowWinSize
 	}
 
-	return
+	s.sockState = sockStateServConnecting
+	return true
 }
 
 /*******************************************************************************
@@ -225,6 +239,8 @@ func (s *udtSocket) respondAcceptHandshake(p *handshakePacket) {
 	close(s.handshaked)
 }
 
-func (s *udtSocket) acknowledgeHanshake() {
-	s.sockState = sock_state_connected
+func (s *udtSocket) readPacket(m *multiplexer, p packet.Packet, from *net.UDPAddr) {
+	switch p := ph.packet.(type) {
+	case *handshakePacket:
+	}
 }
