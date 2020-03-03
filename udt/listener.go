@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash"
-	"io"
 	"log"
 	"net"
 	"time"
@@ -99,7 +98,7 @@ func resolveAddr(ctx context.Context, network, addr string) (*net.UDPAddr, error
 	return addrs[0], nil
 }
 
-func Listen(ctx context.Context, network, address string) (Listener, error) {
+func Listen(ctx context.Context, network, address string) (net.Listener, error) {
 	switch network {
 	case "udp", "udp4", "udp6":
 	default:
@@ -110,7 +109,14 @@ func Listen(ctx context.Context, network, address string) (Listener, error) {
 	if err != nil {
 		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
 	}
+	return ListenUDT(network, addr)
+}
 
+/*
+ListenUDT listens for incoming UDT connections addressed to the local address
+laddr. See function net.ListenUDP for a description of net and laddr.
+*/
+func ListenUDT(network string, addr *net.UDPAddr) (net.Listener, error) {
 	m, err := multiplexerFor(network, addr)
 	if err != nil {
 		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: addr, Err: err}
@@ -145,7 +151,7 @@ func (l *listener) goBumpSynEpoch() {
 	}
 }
 
-func (l *listener) Accept() (io.ReadWriteCloser, error) {
+func (l *listener) Accept() (net.Conn, error) {
 	socket, ok := <-l.accept
 	if ok {
 		return socket, nil
@@ -196,8 +202,6 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 	isSYN, newCookie := l.checkSynCookie(hsPacket.SynCookie, from)
 	if !isSYN {
 		err := m.sendControl(from, hsPacket.SockID, 0, &packet.HandshakePacket{
-			//ts        uint32
-			//DstSockID  = hsPacket.SockID
 			UdtVer:   hsPacket.UdtVer,
 			SockType: hsPacket.SockType,
 			// InitPkgSeq = 0
@@ -215,7 +219,7 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 		return true
 	}
 
-	s, err := l.m.newClientSocket(from)
+	s, err := l.m.newSocket(from, true)
 	if err != nil {
 		log.Printf("New socket creation from listener failed: %s", err.Error())
 		return false

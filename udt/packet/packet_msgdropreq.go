@@ -6,14 +6,14 @@ import (
 	"errors"
 )
 
-type msgDropReqPacket struct {
+type MsgDropReqPacket struct {
 	ctrlHeader
 	msgID    uint32 // Message ID
 	firstSeq uint32 // First sequence number in the message
 	lastSeq  uint32 // Last sequence number in the message
 }
 
-func (p *msgDropReqPacket) WriteTo(buf []byte) (uint, error) {
+func (p *MsgDropReqPacket) WriteTo(buf []byte) (uint, error) {
 	l := len(buf)
 	if l < 24 {
 		return 0, errors.New("packet too small")
@@ -29,7 +29,7 @@ func (p *msgDropReqPacket) WriteTo(buf []byte) (uint, error) {
 	return 24, nil
 }
 
-func (p *msgDropReqPacket) readFrom(data []byte) (err error) {
+func (p *MsgDropReqPacket) readFrom(data []byte) (err error) {
 	l := len(data)
 	if l < 24 {
 		return errors.New("packet too small")

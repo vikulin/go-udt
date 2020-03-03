@@ -4,14 +4,14 @@ import "errors"
 
 // Structure of packets and functions for writing/reading them
 
-type userDefControlPacket struct {
+type UserDefControlPacket struct {
 	ctrlHeader
 	msgType   uint16 // user-defined message type
 	addtlInfo uint32
 	data      []byte
 }
 
-func (p *userDefControlPacket) WriteTo(buf []byte) (uint, error) {
+func (p *UserDefControlPacket) WriteTo(buf []byte) (uint, error) {
 	l := len(buf)
 	ol := 16 + len(p.data)
 	if l < ol {
@@ -31,7 +31,7 @@ func (p *userDefControlPacket) WriteTo(buf []byte) (uint, error) {
 	return uint(ol), nil
 }
 
-func (p *userDefControlPacket) readFrom(data []byte) (err error) {
+func (p *UserDefControlPacket) readFrom(data []byte) (err error) {
 	if p.addtlInfo, err = p.readHdrFrom(data); err != nil {
 		return err
 	}

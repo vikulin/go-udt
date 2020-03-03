@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-type ackPacket struct {
+type AckPacket struct {
 	ctrlHeader
 	ackSeqNo uint32 // ACK sequence number
 	pktSeqHi uint32 // The packet sequence number to which all the previous packets have been received (excluding)
@@ -19,7 +19,7 @@ type ackPacket struct {
 	estLinkCap  uint32 // Estimated link capacity (in number of packets per second)
 }
 
-func (p *ackPacket) WriteTo(buf []byte) (uint, error) {
+func (p *AckPacket) WriteTo(buf []byte) (uint, error) {
 	l := len(buf)
 	if l < 20 {
 		return 0, errors.New("packet too small")
@@ -48,7 +48,7 @@ func (p *ackPacket) WriteTo(buf []byte) (uint, error) {
 	return 40, nil
 }
 
-func (p *ackPacket) readFrom(data []byte) (err error) {
+func (p *AckPacket) readFrom(data []byte) (err error) {
 	l := len(data)
 	if l < 20 {
 		return errors.New("packet too small")

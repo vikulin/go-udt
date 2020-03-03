@@ -199,19 +199,19 @@ func ReadPacketFrom(data []byte) (p Packet, err error) {
 		case ptHandshake:
 			p = &HandshakePacket{}
 		case ptKeepalive:
-			p = &keepAlivePacket{}
+			p = &KeepAlivePacket{}
 		case ptAck:
-			p = &ackPacket{}
+			p = &AckPacket{}
 		case ptNak:
-			p = &nakPacket{}
+			p = &NakPacket{}
 		case ptShutdown:
-			p = &shutdownPacket{}
+			p = &ShutdownPacket{}
 		case ptAck2:
-			p = &ack2Packet{}
+			p = &Ack2Packet{}
 		case ptMsgDropReq:
-			p = &msgDropReqPacket{}
+			p = &MsgDropReqPacket{}
 		case ptUserDefPkt:
-			p = &userDefControlPacket{msgType: uint16(h & 0xffff)}
+			p = &UserDefControlPacket{msgType: uint16(h & 0xffff)}
 		default:
 			return nil, fmt.Errorf("Unknown control packet type: %X", msgType)
 		}

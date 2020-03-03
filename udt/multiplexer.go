@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/odysseus654/go-udt/udt/packet"
 )
@@ -28,12 +30,14 @@ type multiplexer struct {
 	rvSockets     []*udtSocket // the list of any sockets currently in rendezvous mode
 	listenSock    *listener    // the server socket listening to incoming connections, if there is one
 	servSockMutex sync.Mutex
+	nextSid       uint32 // the SockID for the next socket created
 	//sendQ        *udtSocketQueue // priority queue of udtSockets awaiting a send (actually includes ones with no packets waiting too)
 	pktOut chan packetWrapper // packets queued for immediate sending
 	//in chan packetHolder // packets inbound from the PacketConn
 	//out             chan packet       // packets outbound to the PacketConn
 	//writeBufferPool *bpool.BufferPool // leaky buffer pool for writing to conn
 	//readBytePool *bpool.BytePool // leaky byte pool for reading from conn
+	shutdown chan struct{}
 }
 
 /*
@@ -66,15 +70,17 @@ func newMultiplexer(network string, laddr *net.UDPAddr, conn *net.UDPConn) (m *m
 		network: network,
 		laddr:   laddr,
 		conn:    conn,
+		nextSid: randUint32(),
 		//sendQ:        newUdtSocketQueue(),
 		pktOut: make(chan packetWrapper, 100), // todo: figure out how to size this
 		//in:           make(chan packetHolder, 100),  // todo: make this tunable
 		//out:             make(chan packet, 100),                         // todo: make this tunable
 		//writeBufferPool: bpool.NewBufferPool(25600), // todo: make this tunable
 		//readBytePool:    bpool.NewBytePool(25600, getMaxDatagramSize()), // todo: make this tunable
+		shutdown: make(chan struct{}, 1),
 	}
 
-	go m.coordinate()
+	go m.goReceiveTick()
 	go m.goRead()
 	go m.goWrite()
 
@@ -107,6 +113,27 @@ func (m *multiplexer) unlistenUDT(l *listener) bool {
 	return true
 }
 
+func (m *multiplexer) newSocket(peer *net.UDPAddr, isServer bool) (s *udtSocket, err error) {
+	sid := atomic.AddUint32(&m.nextSid, ^uint32(0))
+
+	s, err = newSocket(m, sid, isServer, peer)
+	if err != nil {
+		return nil, err
+	}
+
+	m.sockets.Store(sid, s)
+	return s, nil
+}
+
+func (m *multiplexer) closeSocket(sockID uint32) bool {
+	if s, ok := m.sockets.Load(sockID); !ok {
+		return false
+	}
+	m.sockets.Delete(sockID)
+	m.checkLive()
+	return true
+}
+
 func (m *multiplexer) checkLive() bool {
 	if m.conn == nil { // have we already been destructed ?
 		return false
@@ -128,6 +155,8 @@ func (m *multiplexer) checkLive() bool {
 	m.conn = nil
 	close(m.pktOut)
 	m.pktOut = nil
+	close(m.shutdown)
+	m.shutdown = nil
 	return false
 }
 
@@ -216,9 +245,10 @@ writeBufferPool, or a new buffer.
 */
 func (m *multiplexer) goWrite() {
 	buf := make([]byte, getMaxDatagramSize())
+	pktOut := m.pktOut
 	for {
 		select {
-		case pw, ok := <-m.pktOut:
+		case pw, ok := <-pktOut:
 			if !ok {
 				return
 			}
@@ -241,49 +271,23 @@ func (m *multiplexer) goWrite() {
 func (m *multiplexer) sendControl(destAddr *net.UDPAddr, destSockID uint32, ts uint32, p packet.ControlPacket) error {
 	p.SetHeader(destSockID, ts)
 	m.pktOut <- packetWrapper{pkt: p, dest: destAddr}
+	return nil
 }
 
-// coordinate runs in a goroutine and coordinates all of the multiplexer's work
-func (m *multiplexer) coordinate() {
+// goReceiveTick runs in a goroutine and handles any receiving socket alarms
+func (m *multiplexer) goReceiveTick() {
+	ticker := time.NewTicker(10 * time.Millisecond) // SYN = 0.01s
+	shutdown := m.shutdown
 	for {
 		select {
-		case p := <-m.in:
-			m.handleInbound(p)
-		}
-	}
-}
-
-func (m *multiplexer) handleInbound(ph packetHolder) {
-	switch p := ph.packet.(type) {
-	case *handshakePacket:
-		// Only process packet if version and type are supported
-		log.Println("Got handshake packet")
-		if p.udtVer == 4 && p.sockType == DGRAM {
-			log.Println("Right version and type")
-			dstSockID := p.h.dstSockId
-			if dstSockID == 0 {
-				dstSockID = p.sockId
-				// create a new udt socket and remember it
-				if s, err := newServerSocket(m, ph.from, p); err == nil {
-					m.sockets[dstSockID] = s
-					log.Printf("Responding to handshake from %s", dstSockID)
-					s.respondInitHandshake(p)
-				}
-
-			} else {
-				s := m.sockets[dstSockID]
-				if s == nil {
-					return
-				}
-				if p.reqType > 0 {
-					log.Println("Accepting handshake from server")
-					s.respondAcceptHandshake(p)
-
-				} else if p.synCookie == s.synCookie {
-					log.Println("Server acknowledge handshake")
-					s.acknowledgeHanshake()
-				}
-			}
+		case _, ok := <-shutdown:
+			ticker.Stop()
+			return
+		case tm := <-ticker.C:
+			m.sockets.Range(func(key, val interface{}) bool {
+				val.(*udtSocket).onReceiveTick(m, tm)
+				return true
+			})
 		}
 	}
 }

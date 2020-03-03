@@ -6,12 +6,12 @@ import (
 	"errors"
 )
 
-type nakPacket struct {
+type NakPacket struct {
 	ctrlHeader
 	cmpLossInfo []uint32 // integer array of compressed loss information
 }
 
-func (p *nakPacket) WriteTo(buf []byte) (uint, error) {
+func (p *NakPacket) WriteTo(buf []byte) (uint, error) {
 
 	off, err := p.WriteHdrTo(buf, ptNak, 0)
 	if err != nil {
@@ -31,7 +31,7 @@ func (p *nakPacket) WriteTo(buf []byte) (uint, error) {
 	return off, nil
 }
 
-func (p *nakPacket) readFrom(data []byte) error {
+func (p *NakPacket) readFrom(data []byte) error {
 	if _, err := p.readHdrFrom(data); err != nil {
 		return err
 	}
