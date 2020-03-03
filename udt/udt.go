@@ -27,36 +27,20 @@ raddr.  See function net.DialUDP for a description of net, laddr and raddr.
 func DialUDT(network string, laddr, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
 	m, err := multiplexerFor(network, laddr)
 	if err != nil {
-		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: laddr, Err: err}
+		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: laddr, Err: err}
 	}
 
 	s, err := m.newSocket(raddr, false)
 	if err != nil {
-		return nil, err
+		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
 	}
 	s.isDatagram = !isStream
 	err = s.startConnect()
-
-	return s, err
-}
-
-// Adapted from https://github.com/hlandau/degoutils/blob/master/net/mtu.go
-const absMaxDatagramSize = 2147483646 // 2**31-2
-func getMaxDatagramSize() int {
-	var m int = 65535
-	ifs, err := net.Interfaces()
 	if err != nil {
-		for i := range ifs {
-			here := ifs[i]
-			if here.Flags&(net.FlagUp|net.FlagLoopback) == net.FlagUp && here.MTU > m {
-				m = ifs[i].MTU
-			}
-		}
+		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
 	}
-	if m > absMaxDatagramSize {
-		m = absMaxDatagramSize
-	}
-	return m
+
+	return s, nil
 }
 
 const (

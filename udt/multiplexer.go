@@ -30,6 +30,7 @@ type multiplexer struct {
 	rvSockets     []*udtSocket // the list of any sockets currently in rendezvous mode
 	listenSock    *listener    // the server socket listening to incoming connections, if there is one
 	servSockMutex sync.Mutex
+	mtu           int    // the Maximum Transmission Unit of packets sent from this address
 	nextSid       uint32 // the SockID for the next socket created
 	//sendQ        *udtSocketQueue // priority queue of udtSockets awaiting a send (actually includes ones with no packets waiting too)
 	pktOut chan packetWrapper // packets queued for immediate sending
@@ -66,17 +67,19 @@ func multiplexerFor(network string, laddr *net.UDPAddr) (*multiplexer, error) {
 }
 
 func newMultiplexer(network string, laddr *net.UDPAddr, conn *net.UDPConn) (m *multiplexer) {
+	mtu, _ := discoverMTU(laddr.IP)
 	m = &multiplexer{
 		network: network,
 		laddr:   laddr,
 		conn:    conn,
+		mtu:     mtu,
 		nextSid: randUint32(),
 		//sendQ:        newUdtSocketQueue(),
 		pktOut: make(chan packetWrapper, 100), // todo: figure out how to size this
 		//in:           make(chan packetHolder, 100),  // todo: make this tunable
 		//out:             make(chan packet, 100),                         // todo: make this tunable
 		//writeBufferPool: bpool.NewBufferPool(25600), // todo: make this tunable
-		//readBytePool:    bpool.NewBytePool(25600, getMaxDatagramSize()), // todo: make this tunable
+		//readBytePool:    bpool.NewBytePool(25600, mtu), // todo: make this tunable
 		shutdown: make(chan struct{}, 1),
 	}
 
@@ -111,6 +114,56 @@ func (m *multiplexer) unlistenUDT(l *listener) bool {
 	m.servSockMutex.Unlock()
 	m.checkLive()
 	return true
+}
+
+// Adapted from https://github.com/hlandau/degoutils/blob/master/net/mtu.go
+const absMaxDatagramSize = 2147483646 // 2**31-2
+func discoverMTU(ourIP net.IP) (int, error) {
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return 65535, err
+	}
+
+	var filtered []net.Interface
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			log.Printf("cannot retrieve iface addresses for %s: %s", iface.Name, err.Error())
+			continue
+		}
+		for _, a := range addrs {
+			var ipnet *net.IPNet
+			switch v := a.(type) {
+			case *net.IPAddr:
+				ipnet = &net.IPNet{v.IP, v.IP.DefaultMask()}
+			case *net.IPNet:
+				ipnet = v
+			}
+			if ipnet == nil {
+				log.Printf("cannot retrieve IPNet from address %s on interface %s", a.String(), iface.Name)
+				continue
+			}
+			if ipnet.Contains(ourIP) {
+				filtered = append(filtered, iface)
+			}
+		}
+	}
+	if len(filtered) == 0 {
+		log.Printf("cannot identify interface(s) associated with %s, doing blind search", ourIP.String())
+		filtered = ifaces
+	}
+
+	var mtu int = 65535
+	for _, iface := range filtered {
+		if iface.Flags&(net.FlagUp|net.FlagLoopback) == net.FlagUp && iface.MTU > mtu {
+			mtu = iface.MTU
+		}
+	}
+	if mtu > absMaxDatagramSize {
+		mtu = absMaxDatagramSize
+	}
+	return mtu, nil
 }
 
 func (m *multiplexer) newSocket(peer *net.UDPAddr, isServer bool) (s *udtSocket, err error) {
@@ -189,7 +242,7 @@ read runs in a goroutine and reads packets from conn using a buffer from the
 readBufferPool, or a new buffer.
 */
 func (m *multiplexer) goRead() {
-	buf := make([]byte, getMaxDatagramSize())
+	buf := make([]byte, m.mtu)
 	for {
 		numBytes, from, err := m.conn.ReadFromUDP(buf)
 		if err != nil {
@@ -244,7 +297,7 @@ write runs in a goroutine and writes packets to conn using a buffer from the
 writeBufferPool, or a new buffer.
 */
 func (m *multiplexer) goWrite() {
-	buf := make([]byte, getMaxDatagramSize())
+	buf := make([]byte, m.mtu)
 	pktOut := m.pktOut
 	for {
 		select {
@@ -268,7 +321,7 @@ func (m *multiplexer) goWrite() {
 	}
 }
 
-func (m *multiplexer) sendControl(destAddr *net.UDPAddr, destSockID uint32, ts uint32, p packet.ControlPacket) error {
+func (m *multiplexer) sendPacket(destAddr *net.UDPAddr, destSockID uint32, ts uint32, p packet.Packet) error {
 	p.SetHeader(destSockID, ts)
 	m.pktOut <- packetWrapper{pkt: p, dest: destAddr}
 	return nil

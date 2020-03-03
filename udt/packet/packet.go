@@ -37,6 +37,16 @@ const (
 	ptUserDefPkt            = 0x7FFF
 )
 
+type MessageBoundary uint8
+
+const (
+	// Message boundary flags
+	MbFirst  MessageBoundary = 2
+	MbLast                   = 1
+	MbOnly                   = 3
+	MbMiddle                 = 0
+)
+
 var (
 	endianness = binary.BigEndian
 )
@@ -72,11 +82,11 @@ type ControlPacket interface {
 }
 
 type DataPacket struct {
-	seq       uint32
-	msg       uint32
-	ts        uint32
-	DstSockID uint32
-	data      []byte
+	Seq       uint32 // packet sequence number (top bit = 0)
+	msg       uint32 // message sequence number (top three bits = message control)
+	ts        uint32 // timestamp when message is sent
+	DstSockID uint32 // destination socket
+	Data      []byte // payload
 }
 
 func (dp *DataPacket) SetHeader(destSockID uint32, ts uint32) {
@@ -92,8 +102,12 @@ func (dp *DataPacket) SendTime() (ts uint32) {
 	return dp.ts
 }
 
-func (dp *DataPacket) setMsg(boundary uint32, order uint32, msg uint32) {
-	dp.msg = (boundary << 30) | (order << 29) | (msg & 0x1FFFFFFF)
+func (dp *DataPacket) SetMsg(boundary MessageBoundary, order bool, msg uint32) {
+	var iOrder uint32 = 0
+	if order {
+		iOrder = 1
+	}
+	dp.msg = (uint32(boundary) << 30) | (iOrder << 29) | (msg & 0x1FFFFFFF)
 }
 
 func (dp *DataPacket) getMsgBoundary() uint32 {
@@ -110,15 +124,15 @@ func (dp *DataPacket) getMsg() uint32 {
 
 func (dp *DataPacket) WriteTo(buf []byte) (uint, error) {
 	l := len(buf)
-	ol := 16 + len(dp.data)
+	ol := 16 + len(dp.Data)
 	if l < ol {
 		return 0, errors.New("packet too small")
 	}
-	endianness.PutUint32(buf[0:3], dp.seq&0x7FFFFFFF)
+	endianness.PutUint32(buf[0:3], dp.Seq&0x7FFFFFFF)
 	endianness.PutUint32(buf[4:7], dp.msg)
 	endianness.PutUint32(buf[8:11], dp.ts)
 	endianness.PutUint32(buf[12:15], dp.DstSockID)
-	copy(buf[16:], dp.data)
+	copy(buf[16:], dp.Data)
 
 	return uint(ol), nil
 }
@@ -134,8 +148,8 @@ func (dp *DataPacket) readFrom(data []byte) (err error) {
 	dp.DstSockID = endianness.Uint32(data[12:15])
 
 	// The data is whatever is what comes after the 16 bytes of header
-	dp.data = make([]byte, l-16)
-	copy(dp.data, data[16:])
+	dp.Data = make([]byte, l-16)
+	copy(dp.Data, data[16:])
 
 	return
 }
@@ -221,7 +235,7 @@ func ReadPacketFrom(data []byte) (p Packet, err error) {
 
 	// this is a data packet
 	p = &DataPacket{
-		seq: h,
+		Seq: h,
 	}
 	err = p.readFrom(data)
 	return

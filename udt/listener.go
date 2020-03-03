@@ -201,7 +201,7 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 
 	isSYN, newCookie := l.checkSynCookie(hsPacket.SynCookie, from)
 	if !isSYN {
-		err := m.sendControl(from, hsPacket.SockID, 0, &packet.HandshakePacket{
+		err := m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
 			UdtVer:   hsPacket.UdtVer,
 			SockType: hsPacket.SockType,
 			// InitPkgSeq = 0

@@ -32,13 +32,15 @@ type udtSocket struct {
 	sockState      sockState
 	udtVer         uint32
 	pktSeq         uint32 // the current packet sequence number
-	maxPktSize     uint32
+	msgSeq         uint32 // the current message sequence number
+	mtu            int    // the negotiated maximum packet size
 	maxFlowWinSize uint32
-	isDatagram     bool
-	isServer       bool
-	sockID         uint32
-	farSockID      uint32
-	farPktSeq      uint32
+	isDatagram     bool   // if true then we're sending and receiving datagrams, otherwise we're a streaming socket
+	isServer       bool   // if true then we are behaving like a server, otherwise client (or rendezvous)
+	sockID         uint32 // our sockID
+	farSockID      uint32 // the peer's sockID
+	farPktSeq      uint32 // the peer's packet sequence number
+	farMsgSeq      uint32 // the peer's message sequence number
 	//	ackPeriod      uint32       // in microseconds
 	//	nakPeriod      uint32       // in microseconds
 	//	expPeriod      uint32       // in microseconds
@@ -77,20 +79,38 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 }
 
 func (s *udtSocket) Write(p []byte) (n int, err error) {
-	s.pktSeq++
-	dp := &packet.DataPacket{
-		seq:       s.pktSeq,
-		ts:        uint32(time.Now().Sub(s.created) / time.Microsecond),
-		dstSockId: s.sockId,
-		data:      p,
+	n = len(p)
+	state := packet.MbFirst
+	for len(p) > s.mtu {
+		dp := &packet.DataPacket{
+			Seq:  s.pktSeq,
+			Data: p[0 : s.mtu-1],
+		}
+		s.pktSeq++
+		dp.SetMsg(state, true, s.msgSeq)
+		s.dataOut.push(dp)
+		state = packet.MbMiddle
+		p = p[s.mtu:]
 	}
+	dp := &packet.DataPacket{
+		Seq:  s.pktSeq,
+		Data: p,
+	}
+	if state == packet.MbFirst {
+		state = packet.MbOnly
+	} else {
+		state = packet.MbLast
+	}
+	s.pktSeq++
+	dp.SetMsg(state, true, s.msgSeq)
+	s.msgSeq++
 	s.dataOut.push(dp)
 	return
 }
 
 func (s *udtSocket) Close() error {
 	// todo send shutdown packet
-	err := s.sendControl(&packet.ShutdownPacket{})
+	err := s.sendPacket(&packet.ShutdownPacket{})
 	if err != nil {
 		return err
 	}
@@ -160,12 +180,12 @@ func newSocket(m *multiplexer, sockID uint32, isServer bool, raddr *net.UDPAddr)
 		udtVer:         4,
 		isServer:       isServer,
 		pktSeq:         randUint32(),
-		maxPktSize:     uint32(getMaxDatagramSize()),
+		mtu:            m.mtu,
 		maxFlowWinSize: 25600, // todo: turn tunable (minimum 32)
 		isDatagram:     true,
 		sockID:         sockID,
-		dataOut:        newPacketQueue(),
-		messageIn:      make(chan []byte, 256),
+		//dataOut:        newPacketQueue(),
+		messageIn: make(chan []byte, 256),
 	}
 
 	return
@@ -182,11 +202,11 @@ func (s *udtSocket) sendHandshake(synCookie uint32) error {
 		sockType = packet.TypeDGRAM
 	}
 
-	return s.sendControl(&packet.HandshakePacket{
+	return s.sendPacket(&packet.HandshakePacket{
 		UdtVer:         s.udtVer,
 		SockType:       sockType,
 		InitPktSeq:     s.pktSeq,
-		MaxPktSize:     s.maxPktSize,     // maximum packet size (including UDP/IP headers)
+		MaxPktSize:     uint32(s.mtu),    // maximum packet size (including UDP/IP headers)
 		MaxFlowWinSize: s.maxFlowWinSize, // maximum flow window size
 		ReqType:        1,
 		SockID:         s.sockID,
@@ -195,9 +215,9 @@ func (s *udtSocket) sendHandshake(synCookie uint32) error {
 	})
 }
 
-func (s *udtSocket) sendControl(p packet.ControlPacket) error {
+func (s *udtSocket) sendPacket(p packet.Packet) error {
 	ts := uint32(time.Now().Sub(s.created) / time.Microsecond)
-	return s.m.sendControl(s.raddr, s.farSockID, ts, p)
+	return s.m.sendPacket(s.raddr, s.farSockID, ts, p)
 }
 
 // readHandshake is received when a handshake packet is received without a destination, either as part
@@ -215,8 +235,8 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		s.farPktSeq = p.InitPktSeq
 		s.isDatagram = p.SockType == packet.TypeDGRAM
 
-		if s.maxPktSize > p.MaxPktSize {
-			s.maxPktSize = p.MaxPktSize
+		if s.mtu > int(p.MaxPktSize) {
+			s.mtu = int(p.MaxPktSize)
 		}
 		if s.maxFlowWinSize > p.MaxFlowWinSize {
 			s.maxFlowWinSize = p.MaxFlowWinSize
@@ -234,8 +254,8 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		s.farSockID = p.SockID
 		s.farPktSeq = p.InitPktSeq
 
-		if s.maxPktSize > p.MaxPktSize {
-			s.maxPktSize = p.MaxPktSize
+		if s.mtu > int(p.MaxPktSize) {
+			s.mtu = int(p.MaxPktSize)
 		}
 		if s.maxFlowWinSize > p.MaxFlowWinSize {
 			s.maxFlowWinSize = p.MaxFlowWinSize
