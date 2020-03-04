@@ -98,28 +98,14 @@ func resolveAddr(ctx context.Context, network, addr string) (*net.UDPAddr, error
 	return addrs[0], nil
 }
 
-func Listen(ctx context.Context, network, address string) (net.Listener, error) {
-	switch network {
-	case "udp", "udp4", "udp6":
-	default:
-		return nil, net.UnknownNetworkError(network)
-	}
-
-	addr, err := resolveAddr(ctx, network, address)
-	if err != nil {
-		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
-	}
-	return ListenUDT(network, addr)
-}
-
 /*
 ListenUDT listens for incoming UDT connections addressed to the local address
 laddr. See function net.ListenUDP for a description of net and laddr.
 */
-func ListenUDT(network string, addr *net.UDPAddr) (net.Listener, error) {
-	m, err := multiplexerFor(network, addr)
+func ListenUDT(ctx context.Context, network string, addr string) (net.Listener, error) {
+	m, err := multiplexerFor(ctx, network, addr)
 	if err != nil {
-		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: addr, Err: err}
+		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
 	}
 
 	l := &listener{
@@ -132,7 +118,7 @@ func ListenUDT(network string, addr *net.UDPAddr) (net.Listener, error) {
 	}
 
 	if ok := m.listenUDT(l); !ok {
-		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: addr, Err: errors.New("Port in use")}
+		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: m.laddr, Err: errors.New("Port in use")}
 	}
 	go l.goBumpSynEpoch()
 

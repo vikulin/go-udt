@@ -1,12 +1,14 @@
 package udt
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/odysseus654/go-udt/udt/packet"
@@ -24,11 +26,11 @@ A multiplexer multiplexes multiple UDT sockets over a single PacketConn.
 */
 type multiplexer struct {
 	network       string
-	laddr         *net.UDPAddr // the local address handled by this multiplexer
-	conn          *net.UDPConn // the UDPConn from which we read/write
-	sockets       sync.Map     // the udtSockets handled by this multiplexer, by sockId
-	rvSockets     []*udtSocket // the list of any sockets currently in rendezvous mode
-	listenSock    *listener    // the server socket listening to incoming connections, if there is one
+	laddr         *net.UDPAddr   // the local address handled by this multiplexer
+	conn          net.PacketConn // the UDPConn from which we read/write
+	sockets       sync.Map       // the udtSockets handled by this multiplexer, by sockId
+	rvSockets     []*udtSocket   // the list of any sockets currently in rendezvous mode
+	listenSock    *listener      // the server socket listening to incoming connections, if there is one
 	servSockMutex sync.Mutex
 	mtu           int    // the Maximum Transmission Unit of packets sent from this address
 	nextSid       uint32 // the SockID for the next socket created
@@ -46,8 +48,8 @@ multiplexerFor gets or creates a multiplexer for the given local address.  If a
 new multiplexer is created, the given init function is run to obtain an
 io.ReadWriter.
 */
-func multiplexerFor(network string, laddr *net.UDPAddr) (*multiplexer, error) {
-	key := fmt.Sprintf("%s:%s", network, laddr.String())
+func multiplexerFor(ctx context.Context, network string, laddr string) (*multiplexer, error) {
+	key := fmt.Sprintf("%s:%s", network, laddr)
 	if ifM, ok := multiplexers.Load(key); ok {
 		m := ifM.(*multiplexer)
 		if m.isLive() { // checking this in case we have a race condition with multiplexer destruction
@@ -56,17 +58,42 @@ func multiplexerFor(network string, laddr *net.UDPAddr) (*multiplexer, error) {
 	}
 
 	// No multiplexer, need to create connection
-	conn, err := net.ListenUDP(network, laddr)
+
+	// try to avoid fragmentation (and hopefully be notified if we exceed path MTU)
+	config := net.ListenConfig{}
+	config.Control = func(network, address string, c syscall.RawConn) error {
+		return c.Control(func(fd uintptr) {
+			var err error
+			os := runtime.GOOS
+			switch os {
+			case "windows":
+				//err = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 14 /* IP_DONTFRAGMENT for winsock2 */, 1)
+				err = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 71 /* IP_MTU_DISCOVER for winsock2 */, 2 /* IP_PMTUDISC_DO */)
+			case "linux", "android":
+				err = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 10 /* IP_MTU_DISCOVER */, 2 /* IP_PMTUDISC_DO */)
+			default:
+				err = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 67 /* IP_DONTFRAG */, 1)
+			}
+			if err != nil {
+				log.Printf("error on setSockOpt: %s", err.Error())
+			}
+		})
+	}
+
+	//conn, err := net.ListenUDP(network, laddr)
+	conn, err := config.ListenPacket(ctx, network, laddr)
 	if err != nil {
 		return nil, err
 	}
 
-	m := newMultiplexer(network, laddr, conn)
+	addr := conn.LocalAddr().(*net.UDPAddr)
+
+	m := newMultiplexer(network, addr, conn)
 	multiplexers.Store(key, m)
 	return m, nil
 }
 
-func newMultiplexer(network string, laddr *net.UDPAddr, conn *net.UDPConn) (m *multiplexer) {
+func newMultiplexer(network string, laddr *net.UDPAddr, conn net.PacketConn) (m *multiplexer) {
 	mtu, _ := discoverMTU(laddr.IP)
 	m = &multiplexer{
 		network: network,
@@ -244,13 +271,12 @@ readBufferPool, or a new buffer.
 func (m *multiplexer) goRead() {
 	buf := make([]byte, m.mtu)
 	for {
-		numBytes, from, err := m.conn.ReadFromUDP(buf)
+		numBytes, from, err := m.conn.ReadFrom(buf)
 		if err != nil {
 			log.Printf("Unable to read into buffer: %s", err)
 			continue
 		}
 
-		r := bytes.NewReader(buf)
 		p, err := packet.ReadPacketFrom(buf[0:numBytes])
 		if err != nil {
 			log.Printf("Unable to read packet: %s", err)
@@ -271,7 +297,7 @@ func (m *multiplexer) goRead() {
 			if m.rvSockets != nil {
 				foundMatch := false
 				for _, sock := range m.rvSockets {
-					if sock.readHandshake(m, hsPacket, from) {
+					if sock.readHandshake(m, hsPacket, from.(*net.UDPAddr)) {
 						foundMatch = true
 						break
 					}
@@ -282,12 +308,12 @@ func (m *multiplexer) goRead() {
 				}
 			}
 			if m.listenSock != nil {
-				m.listenSock.readHandshake(m, hsPacket, from)
+				m.listenSock.readHandshake(m, hsPacket, from.(*net.UDPAddr))
 				m.servSockMutex.Unlock()
 			}
 		}
 		if ifDestSock, ok := m.sockets.Load(sockID); ok {
-			ifDestSock.(*udtSocket).readPacket(m, p, from)
+			ifDestSock.(*udtSocket).readPacket(m, p, from.(*net.UDPAddr))
 		}
 	}
 }
@@ -313,7 +339,7 @@ func (m *multiplexer) goWrite() {
 			}
 
 			log.Printf("Writing to %s", pw.pkt.SocketID())
-			if _, err = m.conn.WriteToUDP(buf[0:plen], pw.dest); err != nil {
+			if _, err = m.conn.WriteTo(buf[0:plen], pw.dest); err != nil {
 				// TODO: handle write error
 				log.Fatalf("Unable to write out: %s", err.Error())
 			}

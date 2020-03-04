@@ -12,6 +12,7 @@ implemented:
 package udt
 
 import (
+	"context"
 	"crypto/rand"
 	"log"
 	"math"
@@ -24,10 +25,10 @@ import (
 DialUDT establishes an outbound UDT connection using the supplied net, laddr and
 raddr.  See function net.DialUDP for a description of net, laddr and raddr.
 */
-func DialUDT(network string, laddr, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
-	m, err := multiplexerFor(network, laddr)
+func DialUDT(ctx context.Context, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
+	m, err := multiplexerFor(ctx, network, laddr)
 	if err != nil {
-		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: laddr, Err: err}
+		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
 	}
 
 	s, err := m.newSocket(raddr, false)
