@@ -93,20 +93,20 @@ func (h receiveLossHeap) Sorted(iter func(recvLossEntry) bool) {
 }
 
 // Find does a binary search of the heap for the specified packetID which is returned
-func (h receiveLossHeap) Find(packetID uint32) *recvLossEntry {
+func (h receiveLossHeap) Find(packetID uint32) (*recvLossEntry, int) {
 	len := len(h)
 	idx := 0
 	for idx < len {
 		pid := h[idx].packetID
 		if pid == packetID {
-			return &h[idx]
-		} else if pid < packetID {
+			return &h[idx], idx
+		} else if pid > packetID {
 			idx = idx * 2
 		} else {
 			idx = idx*2 + 1
 		}
 	}
-	return nil
+	return nil, -1
 }
 
 // Remove does a binary search of the heap for the specified packetID, which is removed
@@ -118,7 +118,7 @@ func (h *receiveLossHeap) Remove(packetID uint32) bool {
 		if pid == packetID {
 			heap.Remove(h, idx)
 			return true
-		} else if pid < packetID {
+		} else if pid > packetID {
 			idx = idx * 2
 		} else {
 			idx = idx*2 + 1

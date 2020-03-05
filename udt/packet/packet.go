@@ -89,7 +89,7 @@ func (h *ctrlHeader) SetHeader(destSockID uint32, ts uint32) {
 	h.ts = ts
 }
 
-func (h *ctrlHeader) WriteHdrTo(buf []byte, msgType packetType, info uint32) (uint, error) {
+func (h *ctrlHeader) writeHdrTo(buf []byte, msgType packetType, info uint32) (uint, error) {
 	l := len(buf)
 	if l < 16 {
 		return 0, errors.New("packet too small")

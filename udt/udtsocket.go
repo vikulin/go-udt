@@ -19,14 +19,30 @@ const (
 	sockStateClosed
 )
 
-type ackHistoryEntry struct {
-	ackID    uint32
-	sendTime time.Time
-}
-
 type recvDataEvent struct {
 	pkt packet.Packet
 	now time.Time
+}
+
+type CongestionControlParms interface {
+	GetRTT() time.Duration
+	GetMTU() int
+	GetEstBandwidth() int
+	GetLastSentPktID() uint32
+	GetPktArrivalRate() int
+	SetAckInterval(numPkts int)
+	SetAckTimer(t time.Duration)
+	SetRTO(int)
+}
+
+type CongestionControl interface {
+	Init(CongestionControlParms)
+	Close(CongestionControlParms)
+	OnACK(CongestionControlParms)
+	OnNAK(CongestionControlParms)
+	OnTimeout(CongestionControlParms)
+	OnPktSent(CongestionControlParms)
+	OnPktRecv(CongestionControlParms)
 }
 
 /*
@@ -50,7 +66,6 @@ type udtSocket struct {
 	sockID         uint32 // our sockID
 	farSockID      uint32 // the peer's sockID
 	farNextPktSeq  uint32 // the peer's next largest packet ID expected. Owned by goReceiveEvent->ingestData
-	//farMsgSeq      uint32 // the peer's message sequence number. Owned by ????
 	//	ackPeriod      uint32       // in microseconds
 	//	nakPeriod      uint32       // in microseconds
 	//	expPeriod      uint32       // in microseconds
@@ -58,11 +73,13 @@ type udtSocket struct {
 	messageIn  chan []byte // inbound messages. Owned by goReceiveEvent->ingestData
 	messageOut chan []byte // outbound messages. Owned by client caller
 	//	dataOut        *packetQueue // queue of outbound data packets
+	rtt            uint32             // receiver: estimated roundtrip time (microseconds).  Owned by goReceiveEvent->ingestAck2
+	rttVar         uint32             // receiver: roundtrip variance (in microseconds).  Owned by goReceiveEvent->ingestAck2
 	currDp         []byte             // stream connections: currently reading message (for partial reads). Owned by client caller
 	currDpOffset   int                // stream connections: offset in currDp (for partial reads). Owned by client caller
-	recvLossList   *receiveLossHeap   // receiver: loss list. Owned by ?????
-	recvPktPend    *dataPacketHeap    // receiver: list of packets that are waiting to be processed.  Owned by goReceiveEvent->ingestData
-	ackHistory     []*ackHistoryEntry // receiver: list of sent ACKs. Owned by ?????
+	recvLossList   receiveLossHeap    // receiver: loss list. Owned by ????? (at minimum goReceiveEvent->ingestData, goReceiveEvent->ingestMsgDropReq)
+	recvPktPend    dataPacketHeap     // receiver: list of packets that are waiting to be processed.  Owned by goReceiveEvent->(ingestData,ingestMsgDropReq)
+	ackHistory     ackHistoryHeap     // receiver: list of sent ACKs. Owned by ???? (at minimum goReceiveEvent->ingestAck2)
 	pktHistory     []time.Time        // receiver: list of recently received packets. Owned by: readPacket->readData
 	pktPairHistory []time.Duration    // receiver: probing packet window. Owned by: readPacket->readData
 	expCount       int                // receiver: number of continuous EXP timeouts. Owned by: goReceiveEvent
@@ -347,10 +364,6 @@ func (s *udtSocket) readPacket(m *multiplexer, p packet.Packet, from *net.UDPAdd
 	//	s.readAck(m, sp, now)
 	//case *packet.NakPacket: // receiver -> sender
 	//	s.readNak(m, sp, now)
-	//case *packet.Ack2Packet: // sender -> receiver
-	//	s.readAck2(m, sp, now)
-	//case *packet.MsgDropReqPacket: // sender -> receiver
-	//	s.readMsgDropReq(m, sp, now)
 	case *packet.DataPacket: // sender -> receiver
 		s.readData(sp, now)
 	}

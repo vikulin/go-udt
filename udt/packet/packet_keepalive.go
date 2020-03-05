@@ -7,7 +7,7 @@ type KeepAlivePacket struct {
 }
 
 func (p *KeepAlivePacket) WriteTo(buf []byte) (uint, error) {
-	return p.WriteHdrTo(buf, ptKeepalive, 0)
+	return p.writeHdrTo(buf, ptKeepalive, 0)
 }
 
 func (p *KeepAlivePacket) readFrom(data []byte) (err error) {

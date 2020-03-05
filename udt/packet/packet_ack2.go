@@ -4,14 +4,14 @@ package packet
 
 type Ack2Packet struct {
 	ctrlHeader
-	ackSeqNo uint32 // ACK sequence number
+	AckSeqNo uint32 // ACK sequence number
 }
 
 func (p *Ack2Packet) WriteTo(buf []byte) (uint, error) {
-	return p.WriteHdrTo(buf, ptAck2, p.ackSeqNo)
+	return p.writeHdrTo(buf, ptAck2, p.AckSeqNo)
 }
 
 func (p *Ack2Packet) readFrom(data []byte) (err error) {
-	p.ackSeqNo, err = p.readHdrFrom(data)
+	p.AckSeqNo, err = p.readHdrFrom(data)
 	return
 }

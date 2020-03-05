@@ -26,7 +26,7 @@ func (p *HandshakePacket) WriteTo(buf []byte) (uint, error) {
 		return 0, errors.New("packet too small")
 	}
 
-	if _, err := p.WriteHdrTo(buf, ptHandshake, 0); err != nil {
+	if _, err := p.writeHdrTo(buf, ptHandshake, 0); err != nil {
 		return 0, err
 	}
 

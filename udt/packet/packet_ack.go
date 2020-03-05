@@ -25,7 +25,7 @@ func (p *AckPacket) WriteTo(buf []byte) (uint, error) {
 		return 0, errors.New("packet too small")
 	}
 
-	if _, err := p.WriteHdrTo(buf, ptAck, p.ackSeqNo); err != nil {
+	if _, err := p.writeHdrTo(buf, ptAck, p.ackSeqNo); err != nil {
 		return 0, err
 	}
 

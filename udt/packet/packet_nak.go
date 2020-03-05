@@ -13,7 +13,7 @@ type NakPacket struct {
 
 func (p *NakPacket) WriteTo(buf []byte) (uint, error) {
 
-	off, err := p.WriteHdrTo(buf, ptNak, 0)
+	off, err := p.writeHdrTo(buf, ptNak, 0)
 	if err != nil {
 		return 0, err
 	}

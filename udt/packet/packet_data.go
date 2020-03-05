@@ -33,24 +33,16 @@ func (dp *DataPacket) SendTime() (ts uint32) {
 	return dp.ts
 }
 
-func (dp *DataPacket) SetMsg(boundary MessageBoundary, order bool, msg uint32) {
+func (dp *DataPacket) SetMessageData(boundary MessageBoundary, order bool, msg uint32) {
 	var iOrder uint32 = 0
 	if order {
-		iOrder = 1
+		iOrder = 0x20000000
 	}
-	dp.msg = (uint32(boundary) << 30) | (iOrder << 29) | (msg & 0x1FFFFFFF)
+	dp.msg = (uint32(boundary) << 30) | iOrder | (msg & 0x1FFFFFFF)
 }
 
-func (dp *DataPacket) GetMsgBoundary() MessageBoundary {
-	return MessageBoundary(dp.msg >> 30)
-}
-
-func (dp *DataPacket) GetMsgOrderFlag() bool {
-	return (1 == ((dp.msg >> 29) & 1))
-}
-
-func (dp *DataPacket) GetMsg() uint32 {
-	return dp.msg & 0x1FFFFFFF
+func (dp *DataPacket) GetMessageData() (MessageBoundary, bool, uint32) {
+	return MessageBoundary(dp.msg >> 30), (dp.msg & 0x20000000) != 0, dp.msg & 0x1FFFFFFF
 }
 
 func (dp *DataPacket) WriteTo(buf []byte) (uint, error) {

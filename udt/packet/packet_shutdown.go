@@ -7,7 +7,7 @@ type ShutdownPacket struct {
 }
 
 func (p *ShutdownPacket) WriteTo(buf []byte) (uint, error) {
-	return p.WriteHdrTo(buf, ptShutdown, 0)
+	return p.writeHdrTo(buf, ptShutdown, 0)
 }
 
 func (p *ShutdownPacket) readFrom(data []byte) (err error) {

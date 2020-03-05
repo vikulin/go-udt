@@ -18,15 +18,11 @@ func (s *udtSocket) goReceiveEvent() {
 			}
 			s.expCount = 1
 			switch sp := evt.pkt.(type) {
-			//case *packet.AckPacket: // receiver -> sender
-			//	s.ingestAck(m, sp, now)
-			//case *packet.NakPacket: // receiver -> sender
-			//	s.ingestNak(m, sp, now)
-			//case *packet.Ack2Packet: // sender -> receiver
-			//	s.ingestAck2(m, sp, now)
-			//case *packet.MsgDropReqPacket: // sender -> receiver
-			//	s.ingestMsgDropReq(m, sp, now)
-			case *packet.DataPacket: // sender -> receiver
+			case *packet.Ack2Packet:
+				s.ingestAck2(sp, evt.now)
+			case *packet.MsgDropReqPacket:
+				s.ingestMsgDropReq(sp, evt.now)
+			case *packet.DataPacket:
 				s.ingestData(sp)
 			}
 		}
@@ -93,6 +89,73 @@ func (s *udtSocket) readData(p *packet.DataPacket, now time.Time) {
 	}
 }
 
+func absdiff(a uint32, b uint32) uint32 {
+	if a < b {
+		return b - a
+	}
+	return a - b
+}
+
+// owned by: goReceiveEvent
+// ingestAck2 is called to process an ACK2 packet
+func (s *udtSocket) ingestAck2(p *packet.Ack2Packet, now time.Time) {
+	ackSeq := p.AckSeqNo
+	if s.ackHistory == nil {
+		return // no ACKs to search
+	}
+
+	ackHistEntry, ackIdx := s.ackHistory.Find(ackSeq)
+	if ackHistEntry == nil {
+		return // this ACK not found
+	}
+	heap.Remove(&s.ackHistory, ackIdx)
+
+	// Update the largest ACK number ever been acknowledged.
+
+	thisRTT := uint32(now.Sub(ackHistEntry.sendTime) / 1000)
+	s.rtt = (s.rtt*7 + thisRTT) / 8
+	s.rttVar = (s.rttVar*3 + absdiff(s.rtt, thisRTT)) / 4
+
+	s.resetAckNakPeriods()
+	//s.rto = 4 * s.rtt + s.rttVar
+	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.*/
+}
+
+// owned by: goReceiveEvent
+// ingestMsgDropReq is called to process an message drop request packet
+func (s *udtSocket) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Time) {
+	for pktID := p.FirstSeq; pktID <= p.LastSeq; pktID++ {
+		// remove all these packets from the loss list
+		if s.recvLossList != nil {
+			if lossEntry, idx := s.recvLossList.Find(pktID); lossEntry != nil {
+				heap.Remove(&s.recvLossList, idx)
+			}
+		}
+
+		// remove all pending packets with this message
+		if s.recvPktPend != nil {
+			if lossEntry, idx := s.recvPktPend.Find(pktID); lossEntry != nil {
+				heap.Remove(&s.recvPktPend, idx)
+			}
+		}
+	}
+
+	if s.recvLossList != nil && len(s.recvLossList) == 0 {
+		s.recvLossList = nil
+	}
+	if s.recvPktPend != nil && len(s.recvPktPend) == 0 {
+		s.recvPktPend = nil
+	}
+
+	// try to push any pending packets out, now that we have dropped any blocking packets
+	for s.recvPktPend != nil {
+		nextPkt, _ := s.recvPktPend.UpperBound(p.LastSeq)
+		if nextPkt == nil || !s.attemptProcessPacket(nextPkt, false) {
+			break
+		}
+	}
+}
+
 // owned by: goReceiveEvent
 // ingestData is called to process a data packet
 func (s *udtSocket) ingestData(p *packet.DataPacket) {
@@ -108,11 +171,11 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 		}
 
 		if s.recvLossList == nil {
-			s.recvLossList = &newLoss
-			heap.Init(s.recvLossList)
+			s.recvLossList = newLoss
+			heap.Init(&s.recvLossList)
 		} else {
 			for idx := s.farNextPktSeq; idx < seq; idx++ {
-				heap.Push(s.recvLossList, recvLossEntry{packetID: seq})
+				heap.Push(&s.recvLossList, recvLossEntry{packetID: seq})
 			}
 		}
 
@@ -125,28 +188,36 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 			return // already previously received packet -- ignore
 		}
 
-		if len(*s.recvLossList) == 0 {
+		if len(s.recvLossList) == 0 {
 			s.recvLossList = nil
 		}
 	}
 
+	s.attemptProcessPacket(p, true)
+}
+
+func (s *udtSocket) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool {
+	seq := p.Seq
+
 	// can we process this packet?
-	if s.recvLossList != nil && p.GetMsgOrderFlag() {
+	boundary, mustOrder, msgID := p.GetMessageData()
+	if s.recvLossList != nil && mustOrder {
 		minLostSeq := s.recvLossList.Min()
 		if minLostSeq < seq {
 			// we're required to order these packets and we're missing prior packets, so push and return
-			if s.recvPktPend == nil {
-				s.recvPktPend = &dataPacketHeap{p}
-				heap.Init(s.recvPktPend)
-			} else {
-				heap.Push(s.recvPktPend, p)
+			if isNew {
+				if s.recvPktPend == nil {
+					s.recvPktPend = dataPacketHeap{p}
+					heap.Init(&s.recvPktPend)
+				} else {
+					heap.Push(&s.recvPktPend, p)
+				}
 			}
+			return false
 		}
 	}
 
 	// can we find the start of this message?
-	boundary := p.GetMsgBoundary()
-	msgID := p.GetMsg()
 	pieces := make([]*packet.DataPacket, 0)
 	cannotContinue := false
 	switch boundary {
@@ -155,11 +226,11 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 		if s.recvPktPend != nil {
 			pieceSeq := seq - 1
 			for {
-				prevPiece := s.recvPktPend.Find(pieceSeq)
+				prevPiece, _ := s.recvPktPend.Find(pieceSeq)
 				if prevPiece == nil {
 					// we don't have the previous piece, is it missing?
 					if s.recvLossList != nil {
-						if lossEntry := s.recvLossList.Find(pieceSeq); lossEntry != nil {
+						if lossEntry, _ := s.recvLossList.Find(pieceSeq); lossEntry != nil {
 							// it's missing, stop processing
 							cannotContinue = true
 						}
@@ -168,13 +239,12 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 					log.Printf("Message with id %s appears to be a broken fragment", msgID)
 					break
 				}
-				prevMsg := prevPiece.GetMsg()
+				prevBoundary, _, prevMsg := prevPiece.GetMessageData()
 				if prevMsg != msgID {
 					// ...oops? previous piece isn't in the same message
 					log.Printf("Message with id %s appears to be a broken fragment", msgID)
 					break
 				}
-				prevBoundary := prevPiece.GetMsgBoundary()
 				pieces = append([]*packet.DataPacket{prevPiece}, pieces...)
 				if prevBoundary == packet.MbFirst {
 					break
@@ -192,14 +262,14 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 			if s.recvPktPend != nil {
 				pieceSeq := seq + 1
 				for {
-					nextPiece := s.recvPktPend.Find(pieceSeq)
+					nextPiece, _ := s.recvPktPend.Find(pieceSeq)
 					if nextPiece == nil {
 						// we don't have the previous piece, is it missing?
 						if pieceSeq >= s.farNextPktSeq {
 							// hasn't been received yet
 							cannotContinue = true
 						} else if s.recvLossList != nil {
-							if lossEntry := s.recvLossList.Find(pieceSeq); lossEntry != nil {
+							if lossEntry, _ := s.recvLossList.Find(pieceSeq); lossEntry != nil {
 								// it's missing, stop processing
 								cannotContinue = true
 							}
@@ -209,15 +279,14 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 						// in any case we can't continue with this
 						break
 					}
-					nextMsg := nextPiece.GetMsg()
+					nextBoundary, _, nextMsg := nextPiece.GetMessageData()
 					if nextMsg != msgID {
 						// ...oops? previous piece isn't in the same message
 						log.Printf("Message with id %s appears to be a broken fragment", msgID)
 						break
 					}
-					prevBoundary := nextPiece.GetMsgBoundary()
 					pieces = append(pieces, nextPiece)
-					if prevBoundary == packet.MbLast {
+					if nextBoundary == packet.MbLast {
 						break
 					}
 				}
@@ -227,13 +296,15 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 
 	if cannotContinue {
 		// we need to wait for more packets, store and return
-		if s.recvPktPend == nil {
-			s.recvPktPend = &dataPacketHeap{p}
-			heap.Init(s.recvPktPend)
-		} else {
-			heap.Push(s.recvPktPend, p)
+		if isNew {
+			if s.recvPktPend == nil {
+				s.recvPktPend = dataPacketHeap{p}
+				heap.Init(&s.recvPktPend)
+			} else {
+				heap.Push(&s.recvPktPend, p)
+			}
 		}
-		return
+		return false
 	}
 
 	// we have a message, pull it from the pending heap (if necessary), assemble it into a message, and return it
@@ -241,7 +312,7 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 		for _, piece := range pieces {
 			s.recvPktPend.Remove(piece.Seq)
 		}
-		if len(*s.recvPktPend) == 0 {
+		if len(s.recvPktPend) == 0 {
 			s.recvPktPend = nil
 		}
 	}
@@ -251,6 +322,7 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 		msg = append(msg, piece.Data...)
 	}
 	s.messageIn <- msg
+	return true
 }
 
 func (s *udtSocket) sendNAK(rl receiveLossHeap) {
@@ -264,18 +336,18 @@ func (s *udtSocket) sendNAK(rl receiveLossHeap) {
 			lastPkt = thisID
 		} else {
 			if firstPkt == lastPkt {
-				lossInfo = append(lossInfo, firstPkt&0x7FFF)
+				lossInfo = append(lossInfo, firstPkt&0x7FFFFFFF)
 			} else {
-				lossInfo = append(lossInfo, firstPkt|0x7FFF, lastPkt&0x7FFF)
+				lossInfo = append(lossInfo, firstPkt|0x7FFFFFFF, lastPkt&0x7FFFFFFF)
 			}
 			firstPkt = thisID
 			lastPkt = thisID
 		}
 	}
 	if firstPkt == lastPkt {
-		lossInfo = append(lossInfo, firstPkt&0x7FFF)
+		lossInfo = append(lossInfo, firstPkt&0x7FFFFFFF)
 	} else {
-		lossInfo = append(lossInfo, firstPkt|0x7FFF, lastPkt&0x7FFF)
+		lossInfo = append(lossInfo, firstPkt|0x7FFFFFFF, lastPkt&0x7FFFFFFF)
 	}
 
 	err := s.sendPacket(&packet.NakPacket{

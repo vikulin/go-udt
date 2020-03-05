@@ -34,20 +34,35 @@ func (h *dataPacketHeap) Pop() interface{} {
 }
 
 // Find does a binary search of the heap for the specified packetID which is returned
-func (h dataPacketHeap) Find(packetID uint32) *packet.DataPacket {
+func (h dataPacketHeap) Find(packetID uint32) (*packet.DataPacket, int) {
 	len := len(h)
 	idx := 0
 	for idx < len {
 		pid := h[idx].Seq
 		if pid == packetID {
-			return h[idx]
-		} else if pid < packetID {
+			return h[idx], idx
+		} else if pid > packetID {
 			idx = idx * 2
 		} else {
 			idx = idx*2 + 1
 		}
 	}
-	return nil
+	return nil, -1
+}
+
+// Find does a binary search of the heap for the entry with the lowest packetID greater than the specified value
+func (h dataPacketHeap) UpperBound(packetID uint32) (*packet.DataPacket, int) {
+	len := len(h)
+	idx := 0
+	for idx < len {
+		pid := h[idx].Seq
+		if pid > packetID {
+			idx = idx * 2
+		} else {
+			idx = idx*2 + 1
+		}
+	}
+	return nil, -1
 }
 
 // Remove does a binary search of the heap for the specified packetID, which is removed
@@ -59,7 +74,7 @@ func (h *dataPacketHeap) Remove(packetID uint32) bool {
 		if pid == packetID {
 			heap.Remove(h, idx)
 			return true
-		} else if pid < packetID {
+		} else if pid > packetID {
 			idx = idx * 2
 		} else {
 			idx = idx*2 + 1
