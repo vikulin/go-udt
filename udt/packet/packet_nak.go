@@ -8,7 +8,7 @@ import (
 
 type NakPacket struct {
 	ctrlHeader
-	cmpLossInfo []uint32 // integer array of compressed loss information
+	CmpLossInfo []uint32 // integer array of compressed loss information
 }
 
 func (p *NakPacket) WriteTo(buf []byte) (uint, error) {
@@ -19,11 +19,11 @@ func (p *NakPacket) WriteTo(buf []byte) (uint, error) {
 	}
 
 	l := uint(len(buf))
-	if l < off+uint(4*len(p.cmpLossInfo)) {
+	if l < off+uint(4*len(p.CmpLossInfo)) {
 		return 0, errors.New("packet too small")
 	}
 
-	for _, elm := range p.cmpLossInfo {
+	for _, elm := range p.CmpLossInfo {
 		endianness.PutUint32(buf[off:off+3], elm)
 		off = off + 4
 	}
@@ -37,10 +37,10 @@ func (p *NakPacket) readFrom(data []byte) error {
 	}
 	l := len(data)
 	numEntry := (l - 16) / 4
-	p.cmpLossInfo = make([]uint32, numEntry)
-	for idx := range p.cmpLossInfo {
+	p.CmpLossInfo = make([]uint32, numEntry)
+	for idx := range p.CmpLossInfo {
 		st := 16 + 4*idx
-		p.cmpLossInfo[idx] = endianness.Uint32(data[st : st+3])
+		p.CmpLossInfo[idx] = endianness.Uint32(data[st : st+3])
 	}
 	return nil
 }

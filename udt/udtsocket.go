@@ -451,11 +451,12 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 	excluding) these two values into the receiver's loss list and
 	send them to the sender in an NAK packet. */
 	if seq > s.farNextPktSeq {
+		newLoss := make(receiveLossHeap, 0, seq-s.farNextPktSeq)
+		for idx := s.farNextPktSeq; idx < seq; idx++ {
+			newLoss = append(newLoss, recvLossEntry{packetID: seq})
+		}
+
 		if s.recvLossList == nil {
-			newLoss := make(receiveLossHeap, 0, seq-s.farNextPktSeq)
-			for idx := s.farNextPktSeq; idx < seq; idx++ {
-				newLoss = append(newLoss, recvLossEntry{packetID: seq})
-			}
 			s.recvLossList = &newLoss
 			heap.Init(s.recvLossList)
 		} else {
@@ -464,6 +465,7 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 			}
 		}
 
+		s.sendNAK(newLoss)
 		s.farNextPktSeq = seq + 1
 
 	} else if seq < s.farNextPktSeq {
@@ -598,4 +600,37 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 		msg = append(msg, piece.Data...)
 	}
 	s.messageIn <- msg
+}
+
+func (s *udtSocket) sendNAK(rl receiveLossHeap) {
+	lossInfo := make([]uint32, 0)
+	firstPkt := rl[0].packetID
+	lastPkt := rl[0].packetID
+	len := len(rl)
+	for idx := 1; idx < len; idx++ {
+		thisID := rl[idx].packetID
+		if thisID == lastPkt+1 {
+			lastPkt = thisID
+		} else {
+			if firstPkt == lastPkt {
+				lossInfo = append(lossInfo, firstPkt&0x7FFF)
+			} else {
+				lossInfo = append(lossInfo, firstPkt|0x7FFF, lastPkt&0x7FFF)
+			}
+			firstPkt = thisID
+			lastPkt = thisID
+		}
+	}
+	if firstPkt == lastPkt {
+		lossInfo = append(lossInfo, firstPkt&0x7FFF)
+	} else {
+		lossInfo = append(lossInfo, firstPkt|0x7FFF, lastPkt&0x7FFF)
+	}
+
+	err := s.sendPacket(&packet.NakPacket{
+		CmpLossInfo: lossInfo,
+	})
+	if err != nil {
+		log.Printf("Cannot send NAK: %s", err.Error())
+	}
 }

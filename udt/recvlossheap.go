@@ -66,6 +66,32 @@ func (h receiveLossHeap) Max() uint32 {
 	return 0
 }
 
+func (h receiveLossHeap) sortedImpl(idx int, len int, iter func(recvLossEntry) bool) bool {
+	next := idx * 2
+	if next < len {
+		if !h.sortedImpl(next, len, iter) {
+			return false
+		}
+	}
+	if !iter(h[idx]) {
+		return false
+	}
+
+	next++
+	if next < len {
+		if !h.sortedImpl(next, len, iter) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// Range calls the passed function in sorted order
+func (h receiveLossHeap) Sorted(iter func(recvLossEntry) bool) {
+	h.sortedImpl(0, len(h), iter)
+}
+
 // Find does a binary search of the heap for the specified packetID which is returned
 func (h receiveLossHeap) Find(packetID uint32) *recvLossEntry {
 	len := len(h)
