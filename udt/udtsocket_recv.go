@@ -26,7 +26,6 @@ func (s *udtSocket) goReceiveEvent() {
 				s.ingestData(sp)
 			}
 		}
-
 	}
 }
 
@@ -111,14 +110,17 @@ func (s *udtSocket) ingestAck2(p *packet.Ack2Packet, now time.Time) {
 	heap.Remove(&s.ackHistory, ackIdx)
 
 	// Update the largest ACK number ever been acknowledged.
+	if s.largestACK < ackSeq {
+		s.largestACK = ackSeq
+	}
 
 	thisRTT := uint32(now.Sub(ackHistEntry.sendTime) / 1000)
 	s.rtt = (s.rtt*7 + thisRTT) / 8
 	s.rttVar = (s.rttVar*3 + absdiff(s.rtt, thisRTT)) / 4
 
+	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.*/
 	s.resetAckNakPeriods()
 	//s.rto = 4 * s.rtt + s.rttVar
-	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.*/
 }
 
 // owned by: goReceiveEvent

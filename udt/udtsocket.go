@@ -19,7 +19,7 @@ const (
 	sockStateClosed
 )
 
-type recvDataEvent struct {
+type recvPktEvent struct {
 	pkt packet.Packet
 	now time.Time
 }
@@ -73,17 +73,19 @@ type udtSocket struct {
 	messageIn  chan []byte // inbound messages. Owned by goReceiveEvent->ingestData
 	messageOut chan []byte // outbound messages. Owned by client caller
 	//	dataOut        *packetQueue // queue of outbound data packets
-	rtt            uint32             // receiver: estimated roundtrip time (microseconds).  Owned by goReceiveEvent->ingestAck2
-	rttVar         uint32             // receiver: roundtrip variance (in microseconds).  Owned by goReceiveEvent->ingestAck2
-	currDp         []byte             // stream connections: currently reading message (for partial reads). Owned by client caller
-	currDpOffset   int                // stream connections: offset in currDp (for partial reads). Owned by client caller
-	recvLossList   receiveLossHeap    // receiver: loss list. Owned by ????? (at minimum goReceiveEvent->ingestData, goReceiveEvent->ingestMsgDropReq)
-	recvPktPend    dataPacketHeap     // receiver: list of packets that are waiting to be processed.  Owned by goReceiveEvent->(ingestData,ingestMsgDropReq)
-	ackHistory     ackHistoryHeap     // receiver: list of sent ACKs. Owned by ???? (at minimum goReceiveEvent->ingestAck2)
-	pktHistory     []time.Time        // receiver: list of recently received packets. Owned by: readPacket->readData
-	pktPairHistory []time.Duration    // receiver: probing packet window. Owned by: readPacket->readData
-	expCount       int                // receiver: number of continuous EXP timeouts. Owned by: goReceiveEvent
-	recvEvent      chan recvDataEvent // receiver: ingest the specified packet
+	rtt            uint32            // receiver: estimated roundtrip time (microseconds).  Owned by goReceiveEvent->ingestAck2
+	rttVar         uint32            // receiver: roundtrip variance (in microseconds).  Owned by goReceiveEvent->ingestAck2
+	largestACK     uint32            // receiver: largest ACK packet we've sent that has been acknowledged (by an ACK2). Owned by goReceiveEvent->ingestAck2
+	currDp         []byte            // stream connections: currently reading message (for partial reads). Owned by client caller
+	currDpOffset   int               // stream connections: offset in currDp (for partial reads). Owned by client caller
+	recvLossList   receiveLossHeap   // receiver: loss list. Owned by ????? (at minimum goReceiveEvent->ingestData, goReceiveEvent->ingestMsgDropReq)
+	recvPktPend    dataPacketHeap    // receiver: list of packets that are waiting to be processed.  Owned by goReceiveEvent->(ingestData,ingestMsgDropReq)
+	ackHistory     ackHistoryHeap    // receiver: list of sent ACKs. Owned by ???? (at minimum goReceiveEvent->ingestAck2)
+	pktHistory     []time.Time       // receiver: list of recently received packets. Owned by: readPacket->readData
+	pktPairHistory []time.Duration   // receiver: probing packet window. Owned by: readPacket->readData
+	expCount       int               // receiver: number of continuous EXP timeouts. Owned by: goReceiveEvent
+	recvEvent      chan recvPktEvent // receiver: ingest the specified packet
+	sendEvent      chan recvPktEvent // sender: ingest the specified packet
 }
 
 /*******************************************************************************
@@ -231,9 +233,11 @@ func newSocket(m *multiplexer, sockID uint32, isServer bool, raddr *net.UDPAddr)
 		//dataOut:        newPacketQueue(),
 		messageIn:  make(chan []byte, 256),
 		messageOut: make(chan []byte, 256),
-		recvEvent:  make(chan recvDataEvent, 256),
+		recvEvent:  make(chan recvPktEvent, 256),
+		sendEvent:  make(chan recvPktEvent, 256),
 	}
 	go s.goReceiveEvent()
+	go s.goSendEvent()
 
 	return
 }
@@ -353,17 +357,15 @@ func (s *udtSocket) readPacket(m *multiplexer, p packet.Packet, from *net.UDPAdd
 		return
 	}
 
-	s.recvEvent <- recvDataEvent{pkt: p, now: now}
+	s.recvEvent <- recvPktEvent{pkt: p, now: now}
 
 	switch sp := p.(type) {
 	case *packet.HandshakePacket: // sent by both peers
 		s.readHandshake(m, sp, from)
 	case *packet.ShutdownPacket: // sent by either peer
 		s.handleClose()
-	//case *packet.AckPacket: // receiver -> sender
-	//	s.readAck(m, sp, now)
-	//case *packet.NakPacket: // receiver -> sender
-	//	s.readNak(m, sp, now)
+	case *packet.AckPacket, *packet.NakPacket: // receiver -> sender
+		s.sendEvent <- recvPktEvent{pkt: p, now: now}
 	case *packet.DataPacket: // sender -> receiver
 		s.readData(sp, now)
 	}
