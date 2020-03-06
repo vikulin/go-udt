@@ -10,8 +10,11 @@ import (
 
 func (s *udtSocket) goReceiveEvent() {
 	recvEvent := s.recvEvent
+	closed := s.closed
 	for {
 		select {
+		case _, ok := <-closed:
+			return
 		case evt, ok := <-recvEvent:
 			if !ok {
 				return
@@ -64,26 +67,26 @@ func (s *udtSocket) readData(p *packet.DataPacket, now time.Time) {
 	/* If the sequence number of the current data packet is 16n + 1,
 	where n is an integer, record the time interval between this
 	packet and the last data packet in the Packet Pair Window. */
-	if (p.Seq-1)&0xf == 0 && s.pktHistory != nil {
-		lastTime := s.pktHistory[len(s.pktHistory)-1]
+	if (p.Seq-1)&0xf == 0 && s.recvPktHistory != nil {
+		lastTime := s.recvPktHistory[len(s.recvPktHistory)-1]
 		pairDist := now.Sub(lastTime)
-		if s.pktPairHistory == nil {
-			s.pktPairHistory = []time.Duration{pairDist}
+		if s.recvPktPairHistory == nil {
+			s.recvPktPairHistory = []time.Duration{pairDist}
 		} else {
-			s.pktPairHistory = append(s.pktPairHistory, pairDist)
-			if len(s.pktPairHistory) > 16 {
-				s.pktPairHistory = s.pktPairHistory[len(s.pktPairHistory)-16:]
+			s.recvPktPairHistory = append(s.recvPktPairHistory, pairDist)
+			if len(s.recvPktPairHistory) > 16 {
+				s.recvPktPairHistory = s.recvPktPairHistory[len(s.recvPktPairHistory)-16:]
 			}
 		}
 	}
 
 	// Record the packet arrival time in PKT History Window.
-	if s.pktHistory == nil {
-		s.pktHistory = []time.Time{now}
+	if s.recvPktHistory == nil {
+		s.recvPktHistory = []time.Time{now}
 	} else {
-		s.pktHistory = append(s.pktHistory, now)
-		if len(s.pktHistory) > 16 {
-			s.pktHistory = s.pktHistory[len(s.pktHistory)-16:]
+		s.recvPktHistory = append(s.recvPktHistory, now)
+		if len(s.recvPktHistory) > 16 {
+			s.recvPktHistory = s.recvPktHistory[len(s.recvPktHistory)-16:]
 		}
 	}
 }

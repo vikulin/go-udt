@@ -7,9 +7,9 @@ type MessageBoundary uint8
 const (
 	// Message boundary flags
 	MbFirst  MessageBoundary = 2
-	MbLast                   = 1
-	MbOnly                   = 3
-	MbMiddle                 = 0
+	MbLast   MessageBoundary = 1
+	MbOnly   MessageBoundary = 3
+	MbMiddle MessageBoundary = 0
 )
 
 type DataPacket struct {

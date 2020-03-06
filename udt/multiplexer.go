@@ -32,15 +32,10 @@ type multiplexer struct {
 	rvSockets     []*udtSocket   // the list of any sockets currently in rendezvous mode
 	listenSock    *listener      // the server socket listening to incoming connections, if there is one
 	servSockMutex sync.Mutex
-	mtu           int    // the Maximum Transmission Unit of packets sent from this address
-	nextSid       uint32 // the SockID for the next socket created
-	//sendQ        *udtSocketQueue // priority queue of udtSockets awaiting a send (actually includes ones with no packets waiting too)
-	pktOut chan packetWrapper // packets queued for immediate sending
-	//in chan packetHolder // packets inbound from the PacketConn
-	//out             chan packet       // packets outbound to the PacketConn
-	//writeBufferPool *bpool.BufferPool // leaky buffer pool for writing to conn
-	//readBytePool *bpool.BytePool // leaky byte pool for reading from conn
-	shutdown chan struct{}
+	mtu           int                // the Maximum Transmission Unit of packets sent from this address
+	nextSid       uint32             // the SockID for the next socket created
+	pktOut        chan packetWrapper // packets queued for immediate sending
+	shutdown      chan struct{}
 }
 
 /*
@@ -96,17 +91,12 @@ func multiplexerFor(ctx context.Context, network string, laddr string) (*multipl
 func newMultiplexer(network string, laddr *net.UDPAddr, conn net.PacketConn) (m *multiplexer) {
 	mtu, _ := discoverMTU(laddr.IP)
 	m = &multiplexer{
-		network: network,
-		laddr:   laddr,
-		conn:    conn,
-		mtu:     mtu,
-		nextSid: randUint32(),
-		//sendQ:        newUdtSocketQueue(),
-		pktOut: make(chan packetWrapper, 100), // todo: figure out how to size this
-		//in:           make(chan packetHolder, 100),  // todo: make this tunable
-		//out:             make(chan packet, 100),                         // todo: make this tunable
-		//writeBufferPool: bpool.NewBufferPool(25600), // todo: make this tunable
-		//readBytePool:    bpool.NewBytePool(25600, mtu), // todo: make this tunable
+		network:  network,
+		laddr:    laddr,
+		conn:     conn,
+		mtu:      mtu,
+		nextSid:  randUint32(),
+		pktOut:   make(chan packetWrapper, 100), // todo: figure out how to size this
 		shutdown: make(chan struct{}, 1),
 	}
 
