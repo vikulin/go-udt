@@ -23,6 +23,7 @@ type recvPktEvent struct {
 	now time.Time
 }
 
+/*
 type CongestionControlParms interface {
 	GetRTT() time.Duration
 	GetMTU() int
@@ -43,13 +44,14 @@ type CongestionControl interface {
 	OnPktSent(CongestionControlParms)
 	OnPktRecv(CongestionControlParms)
 }
-
+*/
 type sendState int
 
 const (
-	sendStateIdle    sendState = iota // not waiting for anything, can send immediately
-	sendStateSending                  // recently sent something, waiting for SND before sending more
-	sendStateWaiting                  // destination is full, waiting for them to process something and come back
+	sendStateIdle        sendState = iota // not waiting for anything, can send immediately
+	sendStateSending                      // recently sent something, waiting for SND before sending more
+	sendStateWaiting                      // destination is full, waiting for them to process something and come back
+	sendStateProcessDrop                  // immediately re-process any drop list requests
 )
 
 /*
@@ -72,32 +74,32 @@ type udtSocket struct {
 	sockState      sockState // socket state - used mostly during handshakes
 	mtu            int       // the negotiated maximum packet size
 	maxFlowWinSize uint      // receiver: maximum unacknowledged packet count
-	//	ackPeriod      uint32       // in microseconds
-	//	nakPeriod      uint32       // in microseconds
-	//	expPeriod      uint32       // in microseconds
-	sndPeriod       time.Duration   // sender: delay between sending packets.  Owned by congestion control
-	currPartialRead []byte          // stream connections: currently reading message (for partial reads). Owned by client caller
-	recvLossList    receiveLossHeap // receiver: loss list. Owned by ????? (at minimum goReceiveEvent->ingestData, goReceiveEvent->ingestMsgDropReq)
-	ackHistory      ackHistoryHeap  // receiver: list of sent ACKs. Owned by ???? (at minimum goReceiveEvent->ingestAck2)
+	//rtoPeriod      time.Duration // set by congestion control, standardized on 4 * RTT + RTTVar
+	//	ackPeriod      time.Duration       // receiver: used to (re-)send an ACK. Set by the congestion control module, never greater than 0.01s
+	//	nakPeriod      time.Duration       // receiver: used to (re-)send a NAK. 4 * RTT + RTTVar + 0.01s
+	//	expPeriod      time.Duration       // sender: expCount * (4 * RTT + RTTVar + 0.01s)
+	sndPeriod       time.Duration // sender: delay between sending packets.  Owned by congestion control, read by sendDataPacket
+	currPartialRead []byte        // stream connections: currently reading message (for partial reads). Owned by client caller (Read)
+	rtt             uint32        // receiver: estimated roundtrip time (microseconds). ***TODO -- is this updated by the sender???
+	rttVar          uint32        // receiver: roundtrip variance (in microseconds). ***TODO -- is this updated by the sender???
 
 	// channels
-	messageIn  chan []byte       // inbound messages. Owned by goReceiveEvent->ingestData
-	messageOut chan []byte       // outbound messages. Owned by client caller. Closed when socket is closed
-	recvEvent  chan recvPktEvent // receiver: ingest the specified packet
-	sendEvent  chan recvPktEvent // sender: ingest the specified packet
+	messageIn  chan []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
+	messageOut chan []byte       // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+	recvEvent  chan recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
+	sendEvent  chan recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
 	closed     chan struct{}     // closed when socket is closed
 
 	// receiver-owned data -- to only be changed by goReceiveEvent or functions it calls
-	farNextPktSeq uint32         // the peer's next largest packet ID expected. Owned by goReceiveEvent->ingestData
-	rtt           uint32         // receiver: estimated roundtrip time (microseconds).  Owned by goReceiveEvent->ingestAck2
-	rttVar        uint32         // receiver: roundtrip variance (in microseconds).  Owned by goReceiveEvent->ingestAck2
-	largestACK    uint32         // receiver: largest ACK packet we've sent that has been acknowledged (by an ACK2). Owned by goReceiveEvent->ingestAck2
-	recvPktPend   dataPacketHeap // receiver: list of packets that are waiting to be processed.  Owned by goReceiveEvent->(ingestData,ingestMsgDropReq)
-	expCount      int            // receiver: number of continuous EXP timeouts. Owned by: goReceiveEvent
+	farNextPktSeq uint32          // the peer's next largest packet ID expected.
+	largestACK    uint32          // receiver: largest ACK packet we've sent that has been acknowledged (by an ACK2).
+	recvPktPend   dataPacketHeap  // receiver: list of packets that are waiting to be processed.
+	recvLossList  receiveLossHeap // receiver: loss list. Owned by ????? (at minimum goReceiveEvent->ingestData, goReceiveEvent->ingestMsgDropReq)
+	ackHistory    ackHistoryHeap  // receiver: list of sent ACKs. Owned by ???? (at minimum goReceiveEvent->ingestAck2)
 
 	// receiver-owned data -- to only be changed by readPacket or functions it calls
-	recvPktHistory     []time.Time     // receiver: list of recently received packets. Owned by: readPacket->readData
-	recvPktPairHistory []time.Duration // receiver: probing packet window. Owned by: readPacket->readData
+	recvPktHistory     []time.Time     // receiver: list of recently received packets.
+	recvPktPairHistory []time.Duration // receiver: probing packet window.
 
 	// sender-owned data -- to only be changed by goSendEvent or functions it calls
 	sendState      sendState        // sender: current state
@@ -106,7 +108,10 @@ type udtSocket struct {
 	msgPartialSend []byte           // sender: when a message can only partially fit in a socket, this is the remainder
 	msgSeq         uint32           // sender: the current message sequence number
 	farFlowWinSize uint             // sender: the estimated peer available window size
-	sndTimer       <-chan time.Time // sender: if a packet is recently sent, this timer fires when SND completes
+	expCount       int              // sender: number of continuous EXP timeouts.
+	expResetCount  time.Time        // sender: the last time expCount was set to 1
+	sendLossList   sendLossHeap     // sender: loss list. Owned by ????? (at minimum goSendEvent->processSendLoss, goSendEvent->ingestNak)
+	sndEvent       <-chan time.Time // sender: if a packet is recently sent, this timer fires when SND completes
 }
 
 /*******************************************************************************
@@ -180,7 +185,6 @@ func (s *udtSocket) Close() error {
 
 	s.handleClose()
 	close(s.messageOut)
-	close(s.closed)
 	return nil
 }
 
@@ -189,7 +193,7 @@ func (s *udtSocket) handleClose() (err error) {
 	s.sockState = sockStateClosed
 	s.m.closeSocket(s.sockID)
 
-	//close(s.messageIn)
+	close(s.closed)
 	return nil
 }
 
@@ -203,19 +207,16 @@ func (s *udtSocket) RemoteAddr() net.Addr {
 
 func (s *udtSocket) SetDeadline(t time.Time) error {
 	// todo set timeout through EXP and SND
-	//return s.m.conn.SetDeadline(t)
 	return nil
 }
 
 func (s *udtSocket) SetReadDeadline(t time.Time) error {
 	// todo set timeout through EXP
-	//return s.m.conn.SetReadDeadline(t)
 	return nil
 }
 
 func (s *udtSocket) SetWriteDeadline(t time.Time) error {
 	// todo set timeout through EXP or SND
-	//return s.m.conn.SetWriteDeadline(t)
 	return nil
 }
 
@@ -225,11 +226,12 @@ func (s *udtSocket) SetWriteDeadline(t time.Time) error {
 
 // newSocket creates a new UDT socket, which will be configured afterwards as either an incoming our outgoing socket
 func newSocket(m *multiplexer, sockID uint32, isServer bool, raddr *net.UDPAddr) (s *udtSocket, err error) {
-	//	raddr := (m.conn.RemoteAddr()).(*net.UDPAddr)
+	now := time.Now()
 	s = &udtSocket{
 		m:              m,
 		raddr:          raddr,
-		created:        time.Now(),
+		created:        now,
+		expResetCount:  now,
 		sockState:      sockStateInit,
 		udtVer:         4,
 		isServer:       isServer,

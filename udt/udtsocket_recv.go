@@ -19,7 +19,6 @@ func (s *udtSocket) goReceiveEvent() {
 			if !ok {
 				return
 			}
-			s.expCount = 1
 			switch sp := evt.pkt.(type) {
 			case *packet.Ack2Packet:
 				s.ingestAck2(sp, evt.now)
@@ -182,6 +181,7 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 			for idx := s.farNextPktSeq; idx < seq; idx++ {
 				heap.Push(&s.recvLossList, recvLossEntry{packetID: seq})
 			}
+			heap.Init(&newLoss)
 		}
 
 		s.sendNAK(newLoss)
@@ -332,27 +332,36 @@ func (s *udtSocket) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool 
 
 func (s *udtSocket) sendNAK(rl receiveLossHeap) {
 	lossInfo := make([]uint32, 0)
-	firstPkt := rl[0].packetID
-	lastPkt := rl[0].packetID
-	len := len(rl)
-	for idx := 1; idx < len; idx++ {
-		thisID := rl[idx].packetID
+	var firstPkt uint32
+	var lastPkt uint32
+
+	isFirst := true
+	rl.Sorted(func(e recvLossEntry) bool {
+		if isFirst {
+			firstPkt = e.packetID
+			lastPkt = e.packetID
+			isFirst = false
+			return true
+		}
+
+		thisID := e.packetID
 		if thisID == lastPkt+1 {
 			lastPkt = thisID
 		} else {
 			if firstPkt == lastPkt {
 				lossInfo = append(lossInfo, firstPkt&0x7FFFFFFF)
 			} else {
-				lossInfo = append(lossInfo, firstPkt|0x7FFFFFFF, lastPkt&0x7FFFFFFF)
+				lossInfo = append(lossInfo, firstPkt|0x80000000, lastPkt&0x7FFFFFFF)
 			}
 			firstPkt = thisID
 			lastPkt = thisID
 		}
-	}
+		return true
+	})
 	if firstPkt == lastPkt {
 		lossInfo = append(lossInfo, firstPkt&0x7FFFFFFF)
 	} else {
-		lossInfo = append(lossInfo, firstPkt|0x7FFFFFFF, lastPkt&0x7FFFFFFF)
+		lossInfo = append(lossInfo, firstPkt|0x80000000, lastPkt&0x7FFFFFFF)
 	}
 
 	err := s.sendPacket(&packet.NakPacket{

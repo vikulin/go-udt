@@ -33,6 +33,20 @@ func (h *dataPacketHeap) Pop() interface{} {
 	return x
 }
 
+// Min returns the smallest packet ID in this heap
+func (h dataPacketHeap) Min() (*packet.DataPacket, int) {
+	len := len(h)
+	idx := 0
+	for {
+		newIdx := idx * 2
+		if newIdx >= len {
+			return h[idx], idx
+		}
+		idx = newIdx
+	}
+	return nil, -1
+}
+
 // Find does a binary search of the heap for the specified packetID which is returned
 func (h dataPacketHeap) Find(packetID uint32) (*packet.DataPacket, int) {
 	len := len(h)
