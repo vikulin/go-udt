@@ -2,6 +2,7 @@ package udt
 
 import (
 	"container/heap"
+	"fmt"
 	"log"
 	"time"
 
@@ -239,10 +240,14 @@ func (s *udtSocket) sendDataPacket(dp *packet.DataPacket, isResend bool) {
 func (s *udtSocket) ingestAck(p *packet.AckPacket, now time.Time) {
 	// Update the largest acknowledged sequence number.
 
+	pktSeqHi := p.PktSeqHi
+	if !s.assertValidSentPktID("ACK", pktSeqHi) {
+		//		s.senderFault(fmt.Errorf("FAULT: Received an ACK for packet %d, but the largest packet we've sent has been %d", p.sendPktSeq, pktSeqHi))
+		return
+	}
+
 	// Send back an ACK2 with the same ACK sequence number in this ACK.
-	err := s.sendPacket(&packet.Ack2Packet{
-		AckSeqNo: p.AckSeqNo,
-	})
+	err := s.sendPacket(&packet.Ack2Packet{AckSeqNo: p.AckSeqNo})
 	if err != nil {
 		log.Printf("Cannot send ACK2: %s", err.Error())
 	}
@@ -260,7 +265,6 @@ func (s *udtSocket) ingestAck(p *packet.AckPacket, now time.Time) {
 	}
 
 	// Update sender's buffer (by releasing the buffer that has been acknowledged).
-	pktSeqHi := p.PktSeqHi
 	if s.sendPktPend != nil {
 		for {
 			minLoss, minLossIdx := s.sendPktPend.Min()
@@ -297,22 +301,30 @@ func (s *udtSocket) ingestNak(p *packet.NakPacket, now time.Time) {
 	for idx := 0; idx < clen; idx++ {
 		thisEntry := p.CmpLossInfo[idx]
 		if thisEntry&0x80000000 != 0 {
+			thisEntry = thisEntry & 0x7FFFFFFF
 			if idx+1 == clen {
-				// not a legal entry, see what we can do about it I guess
-				newLossList = append(newLossList, thisEntry&0x7FFFFFFF)
-				continue
+				s.senderFault(fmt.Errorf("FAULT: While unpacking a NAK, the last entry (%x) was describing a start-of-range", thisEntry))
+				return
+			}
+			if !s.assertValidSentPktID("NAK", thisEntry) {
+				return
 			}
 			lastEntry := p.CmpLossInfo[idx+1]
 			if lastEntry&0x80000000 != 0 {
-				// not a legal entry, see what we can do about it I guess
-				newLossList = append(newLossList, thisEntry&0x7FFFFFFF)
-				continue
+				s.senderFault(fmt.Errorf("FAULT: While unpacking a NAK, a start-of-range (%x) was followed by another start-of-range (%x)", thisEntry, lastEntry))
+				return
+			}
+			if !s.assertValidSentPktID("NAK", lastEntry) {
+				return
 			}
 			idx++
-			for span := thisEntry & 0x7FFFFFFF; span <= lastEntry; span++ {
+			for span := thisEntry; span <= lastEntry; span++ {
 				newLossList = append(newLossList, span)
 			}
 		} else {
+			if !s.assertValidSentPktID("NAK", thisEntry) {
+				return
+			}
 			newLossList = append(newLossList, thisEntry)
 		}
 	}

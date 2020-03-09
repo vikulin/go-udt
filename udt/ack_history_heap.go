@@ -9,7 +9,7 @@ type ackHistoryEntry struct {
 	sendTime time.Time
 }
 
-// receiveLossList defines a list of recvLossEntry records sorted by their packet ID
+// receiveLossList defines a list of ACK records sorted by their ACK id
 type ackHistoryHeap []*ackHistoryEntry
 
 func (h ackHistoryHeap) Len() int {

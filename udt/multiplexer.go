@@ -32,7 +32,7 @@ type multiplexer struct {
 	rvSockets     []*udtSocket   // the list of any sockets currently in rendezvous mode
 	listenSock    *listener      // the server socket listening to incoming connections, if there is one
 	servSockMutex sync.Mutex
-	mtu           int                // the Maximum Transmission Unit of packets sent from this address
+	mtu           uint               // the Maximum Transmission Unit of packets sent from this address
 	nextSid       uint32             // the SockID for the next socket created
 	pktOut        chan packetWrapper // packets queued for immediate sending
 	shutdown      chan struct{}
@@ -95,7 +95,7 @@ func newMultiplexer(network string, laddr *net.UDPAddr, conn net.PacketConn) (m 
 		laddr:    laddr,
 		conn:     conn,
 		mtu:      mtu,
-		nextSid:  randUint32(),
+		nextSid:  randUint32(),                  // Socket ID MUST start from a random value
 		pktOut:   make(chan packetWrapper, 100), // todo: figure out how to size this
 		shutdown: make(chan struct{}, 1),
 	}
@@ -135,7 +135,7 @@ func (m *multiplexer) unlistenUDT(l *listener) bool {
 
 // Adapted from https://github.com/hlandau/degoutils/blob/master/net/mtu.go
 const absMaxDatagramSize = 2147483646 // 2**31-2
-func discoverMTU(ourIP net.IP) (int, error) {
+func discoverMTU(ourIP net.IP) (uint, error) {
 
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -180,13 +180,13 @@ func discoverMTU(ourIP net.IP) (int, error) {
 	if mtu > absMaxDatagramSize {
 		mtu = absMaxDatagramSize
 	}
-	return mtu, nil
+	return uint(mtu), nil
 }
 
-func (m *multiplexer) newSocket(peer *net.UDPAddr, isServer bool) (s *udtSocket, err error) {
+func (m *multiplexer) newSocket(peer *net.UDPAddr, isServer bool, isDatagram bool) (s *udtSocket, err error) {
 	sid := atomic.AddUint32(&m.nextSid, ^uint32(0))
 
-	s, err = newSocket(m, sid, isServer, peer)
+	s, err = newSocket(m, sid, isServer, isDatagram, peer)
 	if err != nil {
 		return nil, err
 	}

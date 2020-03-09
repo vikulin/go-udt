@@ -12,10 +12,11 @@ import (
 type sockState int
 
 const (
-	sockStateInit sockState = iota
-	sockStateConnecting
-	sockStateConnected
-	sockStateClosed
+	sockStateInit       sockState = iota // object is being constructed
+	sockStateConnecting                  // attempting to create a connection
+	sockStateConnected                   // connection is established
+	sockStateClosed                      // connection has been closed (by either end)
+	sockStateRefused                     // connection rejected by remote host
 )
 
 type recvPktEvent struct {
@@ -72,7 +73,7 @@ type udtSocket struct {
 	farSockID  uint32       // the peer's sockID
 
 	sockState      sockState // socket state - used mostly during handshakes
-	mtu            int       // the negotiated maximum packet size
+	mtu            uint      // the negotiated maximum packet size
 	maxFlowWinSize uint      // receiver: maximum unacknowledged packet count
 	//rtoPeriod      time.Duration // set by congestion control, standardized on 4 * RTT + RTTVar
 	//	ackPeriod      time.Duration       // receiver: used to (re-)send an ACK. Set by the congestion control module, never greater than 0.01s
@@ -104,25 +105,75 @@ type udtSocket struct {
 	// sender-owned data -- to only be changed by goSendEvent or functions it calls
 	sendState      sendState        // sender: current state
 	sendPktPend    dataPacketHeap   // sender: list of packets that have been sent but not yet acknoledged
-	pktSeq         uint32           // sender: the current packet sequence number
+	sendPktSeq     uint32           // sender: the current packet sequence number
 	msgPartialSend []byte           // sender: when a message can only partially fit in a socket, this is the remainder
 	msgSeq         uint32           // sender: the current message sequence number
 	farFlowWinSize uint             // sender: the estimated peer available window size
-	expCount       int              // sender: number of continuous EXP timeouts.
+	expCount       uint             // sender: number of continuous EXP timeouts.
 	expResetCount  time.Time        // sender: the last time expCount was set to 1
-	sendLossList   sendLossHeap     // sender: loss list. Owned by ????? (at minimum goSendEvent->processSendLoss, goSendEvent->ingestNak)
+	sendLossList   packetIDHeap     // sender: loss list. Owned by ????? (at minimum goSendEvent->processSendLoss, goSendEvent->ingestNak)
 	sndEvent       <-chan time.Time // sender: if a packet is recently sent, this timer fires when SND completes
+
+	// performance metrics
+	//PktSent      uint64        // number of sent data packets, including retransmissions
+	//PktRecv      uint64        // number of received packets
+	//PktSndLoss   uint          // number of lost packets (sender side)
+	//PktRcvLoss   uint          // number of lost packets (receiver side)
+	//PktRetrans   uint          // number of retransmitted packets
+	//PktSentACK   uint          // number of sent ACK packets
+	//PktRecvACK   uint          // number of received ACK packets
+	//PktSentNAK   uint          // number of sent NAK packets
+	//PktRecvNAK   uint          // number of received NAK packets
+	//MbpsSendRate float64       // sending rate in Mb/s
+	//MbpsRecvRate float64       // receiving rate in Mb/s
+	//SndDuration  time.Duration // busy sending time (i.e., idle time exclusive)
+
+	// instant measurements
+	//PktSndPeriod        time.Duration // packet sending period
+	//PktFlowWindow       uint          // flow window size, in number of packets
+	//PktCongestionWindow uint          // congestion window size, in number of packets
+	//PktFlightSize       uint          // number of packets on flight
+	//MsRTT               time.Duration // RTT
+	//MbpsBandwidth       float64       // estimated bandwidth, in Mb/s
+	//ByteAvailSndBuf     uint          // available UDT sender buffer size
+	//ByteAvailRcvBuf     uint          // available UDT receiver buffer size
 }
 
 /*******************************************************************************
  Implementation of net.Conn interface
 *******************************************************************************/
 
+// Grab the next data packet
+func (s *udtSocket) fetchReadPacket(blocking bool) []byte {
+	var result []byte
+	if blocking {
+		result = <-s.messageIn
+		return result
+	}
+
+	select {
+	case result = <-s.messageIn:
+		// ok we have a message
+	default:
+		// ok we've read some stuff and there's nothing immediately available
+		return nil
+	}
+	return result
+}
+
 func (s *udtSocket) Read(p []byte) (n int, err error) {
+	if s.sockState == sockStateRefused {
+		err = errors.New("Connection refused by remote host")
+		return
+	}
 	if s.isDatagram {
 		// for datagram sockets, block until we have a message to return and then return it
 		// if the buffer isn't big enough, return a truncated message (discarding the rest) and return an error
-		msg := <-s.messageIn
+		msg := s.fetchReadPacket(s.sockState != sockStateClosed)
+		if msg == nil && s.sockState == sockStateClosed {
+			err = errors.New("Connection closed")
+			return
+		}
 		n = copy(p, msg)
 		if n < len(msg) {
 			err = errors.New("Message truncated")
@@ -136,14 +187,13 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 		for idx < l {
 			if s.currPartialRead == nil {
 				// Grab the next data packet
-				if n == 0 {
-					s.currPartialRead = <-s.messageIn
-				} else {
-					select {
-					case s.currPartialRead = <-s.messageIn:
-						// ok we have a message
-					default:
-						// ok we've read some stuff and there's nothing immediately available
+				s.currPartialRead = s.fetchReadPacket(n == 0 && s.sockState != sockStateClosed)
+				if s.currPartialRead == nil {
+					if n != 0 {
+						return
+					}
+					if s.sockState == sockStateClosed {
+						err = errors.New("Connection closed")
 						return
 					}
 				}
@@ -167,6 +217,15 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 	// on the other side:
 	//  for datagram sockets: this is a distinct message to be broken into as few packets as possible
 	//  for streaming sockets: collect as much as can fit into a packet and send them out
+	switch s.sockState {
+	case sockStateRefused:
+		err = errors.New("Connection refused by remote host")
+		return
+	case sockStateClosed:
+		err = errors.New("Connection closed")
+		return
+	}
+
 	n = len(p)
 	s.messageOut <- p
 	return
@@ -225,7 +284,7 @@ func (s *udtSocket) SetWriteDeadline(t time.Time) error {
 *******************************************************************************/
 
 // newSocket creates a new UDT socket, which will be configured afterwards as either an incoming our outgoing socket
-func newSocket(m *multiplexer, sockID uint32, isServer bool, raddr *net.UDPAddr) (s *udtSocket, err error) {
+func newSocket(m *multiplexer, sockID uint32, isServer bool, isDatagram bool, raddr *net.UDPAddr) (s *udtSocket, err error) {
 	now := time.Now()
 	s = &udtSocket{
 		m:              m,
@@ -235,10 +294,10 @@ func newSocket(m *multiplexer, sockID uint32, isServer bool, raddr *net.UDPAddr)
 		sockState:      sockStateInit,
 		udtVer:         4,
 		isServer:       isServer,
-		pktSeq:         randUint32(),
+		sendPktSeq:     randUint32(),
 		mtu:            m.mtu,
 		maxFlowWinSize: 25600, // todo: turn tunable (minimum 32)
-		isDatagram:     true,
+		isDatagram:     isDatagram,
 		sockID:         sockID,
 		messageIn:      make(chan []byte, 256),
 		messageOut:     make(chan []byte, 256),
@@ -254,10 +313,10 @@ func newSocket(m *multiplexer, sockID uint32, isServer bool, raddr *net.UDPAddr)
 
 func (s *udtSocket) startConnect() error {
 	s.sockState = sockStateConnecting
-	return s.sendHandshake(0)
+	return s.sendHandshake(0, packet.HsRequest)
 }
 
-func (s *udtSocket) sendHandshake(synCookie uint32) error {
+func (s *udtSocket) sendHandshake(synCookie uint32, reqType packet.HandshakeReqType) error {
 	sockType := packet.TypeSTREAM
 	if s.isDatagram {
 		sockType = packet.TypeDGRAM
@@ -266,10 +325,10 @@ func (s *udtSocket) sendHandshake(synCookie uint32) error {
 	return s.sendPacket(&packet.HandshakePacket{
 		UdtVer:         uint32(s.udtVer),
 		SockType:       sockType,
-		InitPktSeq:     s.pktSeq,
+		InitPktSeq:     s.sendPktSeq,
 		MaxPktSize:     uint32(s.mtu),            // maximum packet size (including UDP/IP headers)
 		MaxFlowWinSize: uint32(s.maxFlowWinSize), // maximum flow window size
-		ReqType:        1,
+		ReqType:        reqType,
 		SockID:         s.sockID,
 		SynCookie:      synCookie,
 		SockAddr:       s.raddr.IP,
@@ -279,6 +338,11 @@ func (s *udtSocket) sendHandshake(synCookie uint32) error {
 func (s *udtSocket) sendPacket(p packet.Packet) error {
 	ts := uint32(time.Now().Sub(s.created) / time.Microsecond)
 	return s.m.sendPacket(s.raddr, s.farSockID, ts, p)
+}
+
+// checkValidHandshake checks to see if we want to accept a new connection with this handshake.
+func (s *udtSocket) checkValidHandshake(m *multiplexer, p *packet.HandshakePacket, from *net.UDPAddr) bool {
+	return true
 }
 
 // readHandshake is received when a handshake packet is received without a destination, either as part
@@ -297,12 +361,12 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		s.isDatagram = p.SockType == packet.TypeDGRAM
 		s.farFlowWinSize = uint(p.MaxFlowWinSize)
 
-		if s.mtu > int(p.MaxPktSize) {
-			s.mtu = int(p.MaxPktSize)
+		if s.mtu > uint(p.MaxPktSize) {
+			s.mtu = uint(p.MaxPktSize)
 		}
 		s.sockState = sockStateConnected
 
-		err := s.sendHandshake(p.SynCookie)
+		err := s.sendHandshake(p.SynCookie, packet.HsResponse)
 		if err != nil {
 			log.Printf("Socket handshake response failed: %s", err.Error())
 			return false
@@ -310,19 +374,23 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		return true
 
 	case sockStateConnecting: // client attempting to connect to server
+		if p.ReqType == packet.HsRefused {
+			s.sockState = sockStateRefused
+			return true
+		}
 		s.farSockID = p.SockID
 		s.farNextPktSeq = p.InitPktSeq
 		s.farFlowWinSize = uint(p.MaxFlowWinSize)
 
-		if s.mtu > int(p.MaxPktSize) {
-			s.mtu = int(p.MaxPktSize)
+		if s.mtu > uint(p.MaxPktSize) {
+			s.mtu = uint(p.MaxPktSize)
 		}
 		if s.farSockID != 0 {
 			// we've received a sockID from the server, hopefully this means we've finished the handshake
 			s.sockState = sockStateConnected
 		} else {
 			// handshake isn't done yet, send it back with the cookie we received
-			err := s.sendHandshake(p.SynCookie)
+			err := s.sendHandshake(p.SynCookie, packet.HsRequest)
 			if err != nil {
 				log.Printf("Socket handshake response failed: %s", err.Error())
 				return false
@@ -331,11 +399,8 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		return true
 
 	case sockStateConnected: // server repeating a handshake to a client
-		if s.mtu > int(p.MaxPktSize) {
-			s.mtu = int(p.MaxPktSize)
-		}
 		if s.isServer {
-			err := s.sendHandshake(p.SynCookie)
+			err := s.sendHandshake(p.SynCookie, packet.HsResponse)
 			if err != nil {
 				log.Printf("Socket handshake response failed: %s", err.Error())
 				return false

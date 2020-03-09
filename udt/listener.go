@@ -1,6 +1,7 @@
 package udt
 
 import (
+	"container/heap"
 	"context"
 	"crypto/sha1"
 	"encoding/binary"
@@ -8,6 +9,7 @@ import (
 	"hash"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/odysseus654/go-udt/udt/packet"
@@ -21,12 +23,14 @@ var (
 Listener implements the io.Listener interface for UDT.
 */
 type listener struct {
-	m         *multiplexer
-	accept    chan *udtSocket
-	closed    chan struct{}
-	synEpoch  uint32
-	synCookie uint32
-	synHash   hash.Hash
+	m              *multiplexer
+	accept         chan *udtSocket
+	closed         chan struct{}
+	synEpoch       uint32
+	synCookie      uint32
+	synHash        hash.Hash
+	acceptHist     acceptSockHeap
+	acceptHistProt sync.Mutex
 }
 
 // resolveAddr resolves addr, which may be a literal IP
@@ -183,7 +187,34 @@ func (l *listener) checkSynCookie(cookie uint32, from *net.UDPAddr) (bool, uint3
 	return (epoch == (l.synEpoch & 0x1f)) || (epoch == ((l.synEpoch - 1) & 0x1f)), newCookie
 }
 
+// checkValidHandshake checks to see if we want to accept a new connection with this handshake.
+func (l *listener) checkValidHandshake(m *multiplexer, p *packet.HandshakePacket, from *net.UDPAddr) bool {
+	return true
+}
+
 func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacket, from *net.UDPAddr) bool {
+
+	if hsPacket.ReqType != packet.HsRequest {
+		return false // not a request
+	}
+
+	if !l.checkValidHandshake(m, hsPacket, from) {
+		err := m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
+			UdtVer:   hsPacket.UdtVer,
+			SockType: hsPacket.SockType,
+			// InitPkgSeq = 0
+			//MaxPktSize     uint32     // maximum packet size (including UDP/IP headers)
+			//MaxFlowWinSize uint32     // maximum flow window size
+			ReqType: packet.HsRefused,
+			// SockID = 0
+			//SynCookie: newCookie,
+			SockAddr: from.IP,
+		})
+		if err != nil {
+			log.Printf("Listener handshake response failed: %s", err.Error())
+		}
+		return false
+	}
 
 	isSYN, newCookie := l.checkSynCookie(hsPacket.SynCookie, from)
 	if !isSYN {
@@ -193,7 +224,7 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 			// InitPkgSeq = 0
 			//MaxPktSize     uint32     // maximum packet size (including UDP/IP headers)
 			//MaxFlowWinSize uint32     // maximum flow window size
-			ReqType: 1,
+			ReqType: packet.HsResponse,
 			// SockID = 0
 			SynCookie: newCookie,
 			SockAddr:  from.IP,
@@ -205,9 +236,55 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 		return true
 	}
 
-	s, err := l.m.newSocket(from, true)
+	now := time.Now()
+	l.acceptHistProt.Lock()
+	if l.acceptHist != nil {
+		l.acceptHist.Prune(pruneBefore)
+		s, idx := l.acceptHist.Find(hsPacket.SockID, hsPacket.InitPktSeq)
+		if s != nil {
+			l.acceptHist[idx].lastTouch = now
+			l.acceptHistProt.Unlock()
+			return s.readHandshake(m, hsPacket, from)
+		}
+	}
+
+	s, err := l.m.newSocket(from, true, hsPacket.SockType == packet.TypeDGRAM)
 	if err != nil {
 		log.Printf("New socket creation from listener failed: %s", err.Error())
+		return false
+	}
+	l.acceptHistProt.Lock()
+	if l.acceptHist == nil {
+		l.acceptHist = []acceptSockInfo{acceptSockInfo{
+			sockID:    hsPacket.SockID,
+			initSeqNo: hsPacket.InitPktSeq,
+			lastTouch: now,
+			sock:      s,
+		}}
+		heap.Init(&l.acceptHist)
+	} else {
+		heap.Push(&l.acceptHist, acceptSockInfo{
+			sockID:    hsPacket.SockID,
+			initSeqNo: hsPacket.InitPktSeq,
+			lastTouch: now,
+			sock:      s,
+		})
+	}
+	if !s.checkValidHandshake(m, hsPacket, from) {
+		err := m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
+			UdtVer:   hsPacket.UdtVer,
+			SockType: hsPacket.SockType,
+			// InitPkgSeq = 0
+			//MaxPktSize     uint32     // maximum packet size (including UDP/IP headers)
+			//MaxFlowWinSize uint32     // maximum flow window size
+			ReqType: packet.HsRefused,
+			// SockID = 0
+			//SynCookie: newCookie,
+			SockAddr: from.IP,
+		})
+		if err != nil {
+			log.Printf("Listener handshake response failed: %s", err.Error())
+		}
 		return false
 	}
 	if !s.readHandshake(m, hsPacket, from) {
