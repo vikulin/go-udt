@@ -14,7 +14,7 @@ func (h dataPacketHeap) Len() int {
 }
 
 func (h dataPacketHeap) Less(i, j int) bool {
-	return h[i].Seq < h[j].Seq
+	return h[i].Seq.Seq < h[j].Seq.Seq
 }
 
 func (h dataPacketHeap) Swap(i, j int) {
@@ -33,29 +33,15 @@ func (h *dataPacketHeap) Pop() interface{} {
 	return x
 }
 
-// Min returns the smallest packet ID in this heap
-func (h dataPacketHeap) Min() (*packet.DataPacket, int) {
-	len := len(h)
-	idx := 0
-	for {
-		newIdx := idx * 2
-		if newIdx >= len {
-			return h[idx], idx
-		}
-		idx = newIdx
-	}
-	return nil, -1
-}
-
 // Find does a binary search of the heap for the specified packetID which is returned
-func (h dataPacketHeap) Find(packetID uint32) (*packet.DataPacket, int) {
+func (h dataPacketHeap) Find(packetID packet.PacketID) (*packet.DataPacket, int) {
 	len := len(h)
 	idx := 0
 	for idx < len {
 		pid := h[idx].Seq
 		if pid == packetID {
 			return h[idx], idx
-		} else if pid > packetID {
+		} else if pid.Seq > packetID.Seq {
 			idx = idx * 2
 		} else {
 			idx = idx*2 + 1
@@ -64,31 +50,85 @@ func (h dataPacketHeap) Find(packetID uint32) (*packet.DataPacket, int) {
 	return nil, -1
 }
 
-// Find does a binary search of the heap for the entry with the lowest packetID greater than the specified value
-func (h dataPacketHeap) UpperBound(packetID uint32) (*packet.DataPacket, int) {
+/*
+// UpperBound does a binary search of the heap for the entry with the lowest packetID greater than the specified value
+func (h dataPacketHeap) UpperBound(greaterThan packet.PacketID, lessEqual packet.PacketID) (*packet.DataPacket, int) {
 	len := len(h)
 	idx := 0
+	wrapped := greaterThan.Seq > lessEqual.Seq
 	for idx < len {
 		pid := h[idx].Seq
-		if pid > packetID {
-			idx = idx * 2
+		var next int
+		if pid.Seq > greaterThan.Seq {
+			next = idx * 2
 		} else {
-			idx = idx*2 + 1
+			next = idx*2 + 1
+		}
+		if next >= len && h[idx].Seq.Seq > greaterThan.Seq && (wrapped || h[idx].Seq.Seq <= lessEqual.Seq) {
+			return h[idx], idx
+		}
+		idx = next
+	}
+
+	// can't find any packets with greater value, wrap around
+	if wrapped {
+		idx = 0
+		for {
+			next := idx * 2
+			if next >= len && h[idx].Seq.Seq <= lessEqual.Seq {
+				return h[idx], idx
+			}
+			idx = next
+		}
+	}
+	return nil, -1
+}
+*/
+// Min does a binary search of the heap for the entry with the lowest packetID greater than or equal to the specified value
+func (h dataPacketHeap) Min(greaterEqual packet.PacketID, lessEqual packet.PacketID) (*packet.DataPacket, int) {
+	len := len(h)
+	idx := 0
+	wrapped := greaterEqual.Seq > lessEqual.Seq
+	for idx < len {
+		pid := h[idx].Seq
+		var next int
+		if pid.Seq == greaterEqual.Seq {
+			return h[idx], idx
+		} else if pid.Seq >= greaterEqual.Seq {
+			next = idx * 2
+		} else {
+			next = idx*2 + 1
+		}
+		if next >= len && h[idx].Seq.Seq > greaterEqual.Seq && (wrapped || h[idx].Seq.Seq <= lessEqual.Seq) {
+			return h[idx], idx
+		}
+		idx = next
+	}
+
+	// can't find any packets with greater value, wrap around
+	if wrapped {
+		idx = 0
+		for {
+			next := idx * 2
+			if next >= len && h[idx].Seq.Seq <= lessEqual.Seq {
+				return h[idx], idx
+			}
+			idx = next
 		}
 	}
 	return nil, -1
 }
 
 // Remove does a binary search of the heap for the specified packetID, which is removed
-func (h *dataPacketHeap) Remove(packetID uint32) bool {
+func (h *dataPacketHeap) Remove(packetID packet.PacketID) bool {
 	len := len(*h)
 	idx := 0
 	for idx < len {
 		pid := (*h)[idx].Seq
-		if pid == packetID {
+		if pid.Seq == packetID.Seq {
 			heap.Remove(h, idx)
 			return true
-		} else if pid > packetID {
+		} else if pid.Seq > packetID.Seq {
 			idx = idx * 2
 		} else {
 			idx = idx*2 + 1

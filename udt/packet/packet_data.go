@@ -13,11 +13,11 @@ const (
 )
 
 type DataPacket struct {
-	Seq       uint32 // packet sequence number (top bit = 0)
-	msg       uint32 // message sequence number (top three bits = message control)
-	ts        uint32 // timestamp when message is sent
-	DstSockID uint32 // destination socket
-	Data      []byte // payload
+	Seq       PacketID // packet sequence number (top bit = 0)
+	msg       uint32   // message sequence number (top three bits = message control)
+	ts        uint32   // timestamp when message is sent
+	DstSockID uint32   // destination socket
+	Data      []byte   // payload
 }
 
 func (dp *DataPacket) SetHeader(destSockID uint32, ts uint32) {
@@ -51,7 +51,7 @@ func (dp *DataPacket) WriteTo(buf []byte) (uint, error) {
 	if l < ol {
 		return 0, errors.New("packet too small")
 	}
-	endianness.PutUint32(buf[0:3], dp.Seq&0x7FFFFFFF)
+	endianness.PutUint32(buf[0:3], dp.Seq.Seq&0x7FFFFFFF)
 	endianness.PutUint32(buf[4:7], dp.msg)
 	endianness.PutUint32(buf[8:11], dp.ts)
 	endianness.PutUint32(buf[12:15], dp.DstSockID)

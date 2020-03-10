@@ -21,7 +21,7 @@ type HandshakePacket struct {
 	ctrlHeader
 	UdtVer         uint32           // UDT version
 	SockType       socketType       // Socket Type (1 = STREAM or 2 = DGRAM)
-	InitPktSeq     uint32           // initial packet sequence number
+	InitPktSeq     PacketID         // initial packet sequence number
 	MaxPktSize     uint32           // maximum packet size (including UDP/IP headers)
 	MaxFlowWinSize uint32           // maximum flow window size
 	ReqType        HandshakeReqType // connection type (regular(1), rendezvous(0), -1/-2 response)
@@ -42,7 +42,7 @@ func (p *HandshakePacket) WriteTo(buf []byte) (uint, error) {
 
 	endianness.PutUint32(buf[16:19], p.UdtVer)
 	endianness.PutUint32(buf[20:23], uint32(p.SockType))
-	endianness.PutUint32(buf[24:27], p.InitPktSeq)
+	endianness.PutUint32(buf[24:27], p.InitPktSeq.Seq)
 	endianness.PutUint32(buf[28:31], p.MaxPktSize)
 	endianness.PutUint32(buf[32:35], p.MaxFlowWinSize)
 	endianness.PutUint32(buf[36:39], uint32(p.ReqType))
@@ -66,7 +66,7 @@ func (p *HandshakePacket) readFrom(data []byte) error {
 	}
 	p.UdtVer = endianness.Uint32(data[16:19])
 	p.SockType = socketType(endianness.Uint32(data[20:23]))
-	p.InitPktSeq = endianness.Uint32(data[24:27])
+	p.InitPktSeq = PacketID{endianness.Uint32(data[24:27])}
 	p.MaxPktSize = endianness.Uint32(data[28:31])
 	p.MaxFlowWinSize = endianness.Uint32(data[32:35])
 	p.ReqType = HandshakeReqType(endianness.Uint32(data[36:39]))

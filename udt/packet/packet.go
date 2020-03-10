@@ -19,7 +19,7 @@ type socketType uint16
 const (
 	// Socket types
 	TypeSTREAM socketType = 1
-	TypeDGRAM             = 2
+	TypeDGRAM  socketType = 2
 )
 
 type packetType uint16
@@ -27,14 +27,15 @@ type packetType uint16
 const (
 	// Control packet types
 	ptHandshake  packetType = 0x0
-	ptKeepalive             = 0x1
-	ptAck                   = 0x2
-	ptNak                   = 0x3
-	ptCongestion            = 0x4 // unused
-	ptShutdown              = 0x5
-	ptAck2                  = 0x6
-	ptMsgDropReq            = 0x7
-	ptUserDefPkt            = 0x7FFF
+	ptKeepalive  packetType = 0x1
+	ptAck        packetType = 0x2
+	ptNak        packetType = 0x3
+	ptCongestion packetType = 0x4 // unused
+	ptShutdown   packetType = 0x5
+	ptAck2       packetType = 0x6
+	ptMsgDropReq packetType = 0x7
+	ptSpecialErr packetType = 0x8 // unused
+	ptUserDefPkt packetType = 0x7FFF
 )
 
 var (
@@ -135,12 +136,16 @@ func ReadPacketFrom(data []byte) (p Packet, err error) {
 			p = &AckPacket{}
 		case ptNak:
 			p = &NakPacket{}
+		case ptCongestion:
+			p = &CongestionPacket{}
 		case ptShutdown:
 			p = &ShutdownPacket{}
 		case ptAck2:
 			p = &Ack2Packet{}
 		case ptMsgDropReq:
 			p = &MsgDropReqPacket{}
+		case ptSpecialErr:
+			p = &ErrPacket{}
 		case ptUserDefPkt:
 			p = &UserDefControlPacket{msgType: uint16(h & 0xffff)}
 		default:
@@ -152,7 +157,7 @@ func ReadPacketFrom(data []byte) (p Packet, err error) {
 
 	// this is a data packet
 	p = &DataPacket{
-		Seq: h,
+		Seq: PacketID{h},
 	}
 	err = p.readFrom(data)
 	return

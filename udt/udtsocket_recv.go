@@ -66,7 +66,7 @@ func (s *udtSocket) readData(p *packet.DataPacket, now time.Time) {
 	/* If the sequence number of the current data packet is 16n + 1,
 	where n is an integer, record the time interval between this
 	packet and the last data packet in the Packet Pair Window. */
-	if (p.Seq-1)&0xf == 0 && s.recvPktHistory != nil {
+	if (p.Seq.Seq-1)&0xf == 0 && s.recvPktHistory != nil {
 		lastTime := s.recvPktHistory[len(s.recvPktHistory)-1]
 		pairDist := now.Sub(lastTime)
 		if s.recvPktPairHistory == nil {
@@ -117,8 +117,8 @@ func (s *udtSocket) ingestAck2(p *packet.Ack2Packet, now time.Time) {
 	}
 
 	thisRTT := uint32(now.Sub(ackHistEntry.sendTime) / 1000)
-	s.rtt = (s.rtt*7 + thisRTT) / 8
 	s.rttVar = (s.rttVar*3 + absdiff(s.rtt, thisRTT)) / 4
+	s.rtt = (s.rtt*7 + thisRTT) / 8
 
 	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.*/
 	s.resetAckNakPeriods()
@@ -128,7 +128,8 @@ func (s *udtSocket) ingestAck2(p *packet.Ack2Packet, now time.Time) {
 // owned by: goReceiveEvent
 // ingestMsgDropReq is called to process an message drop request packet
 func (s *udtSocket) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Time) {
-	for pktID := p.FirstSeq; pktID <= p.LastSeq; pktID++ {
+	stopSeq := p.LastSeq.Add(1)
+	for pktID := p.FirstSeq; pktID != stopSeq; pktID.Incr() {
 		// remove all these packets from the loss list
 		if s.recvLossList != nil {
 			if lossEntry, idx := s.recvLossList.Find(pktID); lossEntry != nil {
@@ -142,9 +143,14 @@ func (s *udtSocket) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Time) 
 				heap.Remove(&s.recvPktPend, idx)
 			}
 		}
+
 	}
 
+	if p.FirstSeq == s.farRecdPktSeq.Add(1) {
+		s.farRecdPktSeq = p.LastSeq
+	}
 	if s.recvLossList != nil && len(s.recvLossList) == 0 {
+		s.farRecdPktSeq = s.farNextPktSeq.Add(-1)
 		s.recvLossList = nil
 	}
 	if s.recvPktPend != nil && len(s.recvPktPend) == 0 {
@@ -152,8 +158,8 @@ func (s *udtSocket) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Time) 
 	}
 
 	// try to push any pending packets out, now that we have dropped any blocking packets
-	for s.recvPktPend != nil {
-		nextPkt, _ := s.recvPktPend.UpperBound(p.LastSeq)
+	for s.recvPktPend != nil && stopSeq != s.farNextPktSeq {
+		nextPkt, _ := s.recvPktPend.Min(stopSeq, s.farNextPktSeq)
 		if nextPkt == nil || !s.attemptProcessPacket(nextPkt, false) {
 			break
 		}
@@ -168,9 +174,10 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 	than LRSN + 1, put all the sequence numbers between (but
 	excluding) these two values into the receiver's loss list and
 	send them to the sender in an NAK packet. */
-	if seq > s.farNextPktSeq {
-		newLoss := make(receiveLossHeap, 0, seq-s.farNextPktSeq)
-		for idx := s.farNextPktSeq; idx < seq; idx++ {
+	seqDiff := seq.BlindDiff(s.farNextPktSeq)
+	if seqDiff > 0 {
+		newLoss := make(receiveLossHeap, 0, seqDiff)
+		for idx := s.farNextPktSeq; idx != seq; idx.Incr() {
 			newLoss = append(newLoss, recvLossEntry{packetID: seq})
 		}
 
@@ -178,23 +185,26 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 			s.recvLossList = newLoss
 			heap.Init(&s.recvLossList)
 		} else {
-			for idx := s.farNextPktSeq; idx < seq; idx++ {
+			for idx := s.farNextPktSeq; idx != seq; idx.Incr() {
 				heap.Push(&s.recvLossList, recvLossEntry{packetID: seq})
 			}
 			heap.Init(&newLoss)
 		}
 
 		s.sendNAK(newLoss)
-		s.farNextPktSeq = seq + 1
+		s.farNextPktSeq = seq.Add(1)
 
-	} else if seq < s.farNextPktSeq {
+	} else if seqDiff < 0 {
 		// If the sequence number is less than LRSN, remove it from the receiver's loss list.
 		if !s.recvLossList.Remove(seq) {
 			return // already previously received packet -- ignore
 		}
 
 		if len(s.recvLossList) == 0 {
+			s.farRecdPktSeq = s.farNextPktSeq.Add(-1)
 			s.recvLossList = nil
+		} else {
+			s.farRecdPktSeq, _ = s.recvLossList.Min(s.farRecdPktSeq, s.farNextPktSeq)
 		}
 	}
 
@@ -206,20 +216,17 @@ func (s *udtSocket) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool 
 
 	// can we process this packet?
 	boundary, mustOrder, msgID := p.GetMessageData()
-	if s.recvLossList != nil && mustOrder {
-		minLostSeq := s.recvLossList.Min()
-		if minLostSeq < seq {
-			// we're required to order these packets and we're missing prior packets, so push and return
-			if isNew {
-				if s.recvPktPend == nil {
-					s.recvPktPend = dataPacketHeap{p}
-					heap.Init(&s.recvPktPend)
-				} else {
-					heap.Push(&s.recvPktPend, p)
-				}
+	if s.recvLossList != nil && mustOrder && s.farRecdPktSeq.Add(1) != seq {
+		// we're required to order these packets and we're missing prior packets, so push and return
+		if isNew {
+			if s.recvPktPend == nil {
+				s.recvPktPend = dataPacketHeap{p}
+				heap.Init(&s.recvPktPend)
+			} else {
+				heap.Push(&s.recvPktPend, p)
 			}
-			return false
 		}
+		return false
 	}
 
 	// can we find the start of this message?
@@ -229,7 +236,7 @@ func (s *udtSocket) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool 
 	case packet.MbLast, packet.MbMiddle:
 		// we need prior packets, let's make sure we have them
 		if s.recvPktPend != nil {
-			pieceSeq := seq - 1
+			pieceSeq := seq.Add(-1)
 			for {
 				prevPiece, _ := s.recvPktPend.Find(pieceSeq)
 				if prevPiece == nil {
@@ -254,7 +261,7 @@ func (s *udtSocket) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool 
 				if prevBoundary == packet.MbFirst {
 					break
 				}
-				pieceSeq--
+				pieceSeq.Decr()
 			}
 		}
 	}
@@ -265,12 +272,12 @@ func (s *udtSocket) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool 
 		case packet.MbFirst, packet.MbMiddle:
 			// we need following packets, let's make sure we have them
 			if s.recvPktPend != nil {
-				pieceSeq := seq + 1
+				pieceSeq := seq.Add(1)
 				for {
 					nextPiece, _ := s.recvPktPend.Find(pieceSeq)
 					if nextPiece == nil {
 						// we don't have the previous piece, is it missing?
-						if pieceSeq >= s.farNextPktSeq {
+						if pieceSeq == s.farNextPktSeq {
 							// hasn't been received yet
 							cannotContinue = true
 						} else if s.recvLossList != nil {
@@ -330,10 +337,111 @@ func (s *udtSocket) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool 
 	return true
 }
 
+func (s *udtSocket) sendACK(lightAck bool) {
+	/*
+	   {
+	   int32_t ack;
+
+	   // If there is no loss, the ACK is the current largest sequence number plus 1;
+	   // Otherwise it is the smallest sequence number in the receiver loss list.
+	   if (0 == m_pRcvLossList->getLossLength())
+	      ack = CSeqNo::incseq(m_iRcvCurrSeqNo);
+	   else
+	      ack = m_pRcvLossList->getFirstLostSeq();
+
+	   if (ack == m_iRcvLastAckAck)
+	      break;
+
+	   // send out a lite ACK
+	   // to save time on buffer processing and bandwidth/AS measurement, a lite ACK only feeds back an ACK number
+	   if (4 == size)
+	   {
+	      ctrlpkt.pack(pkttype, NULL, &ack, size);
+	      ctrlpkt.m_iID = m_PeerID;
+	      m_pSndQueue->sendto(m_pPeerAddr, ctrlpkt);
+
+	      break;
+	   }
+
+	   uint64_t currtime;
+	   CTimer::rdtsc(currtime);
+
+	   // There are new received packets to acknowledge, update related information.
+	   if (CSeqNo::seqcmp(ack, m_iRcvLastAck) > 0)
+	   {
+	      int acksize = CSeqNo::seqoff(m_iRcvLastAck, ack);
+
+	      m_iRcvLastAck = ack;
+
+	      m_pRcvBuffer->ackData(acksize);
+
+	      // signal a waiting "recv" call if there is any data available
+	      #ifndef WIN32
+	         pthread_mutex_lock(&m_RecvDataLock);
+	         if (m_bSynRecving)
+	            pthread_cond_signal(&m_RecvDataCond);
+	         pthread_mutex_unlock(&m_RecvDataLock);
+	      #else
+	         if (m_bSynRecving)
+	            SetEvent(m_RecvDataCond);
+	      #endif
+
+	      // acknowledge any waiting epolls to read
+	      s_UDTUnited.m_EPoll.update_events(m_SocketID, m_sPollID, UDT_EPOLL_IN, true);
+	   }
+	   else if (ack == m_iRcvLastAck)
+	   {
+	      if ((currtime - m_ullLastAckTime) < ((m_iRTT + 4 * m_iRTTVar) * m_ullCPUFrequency))
+	         break;
+	   }
+	   else
+	      break;
+
+	   // Send out the ACK only if has not been received by the sender before
+	   if (CSeqNo::seqcmp(m_iRcvLastAck, m_iRcvLastAckAck) > 0)
+	   {
+	      int32_t data[6];
+
+	      m_iAckSeqNo = CAckNo::incack(m_iAckSeqNo);
+	      data[0] = m_iRcvLastAck;
+	      data[1] = m_iRTT;
+	      data[2] = m_iRTTVar;
+	      data[3] = m_pRcvBuffer->getAvailBufSize();
+	      // a minimum flow window of 2 is used, even if buffer is full, to break potential deadlock
+	      if (data[3] < 2)
+	         data[3] = 2;
+
+	      if (currtime - m_ullLastAckTime > m_ullSYNInt)
+	      {
+	         data[4] = m_pRcvTimeWindow->getPktRcvSpeed();
+	         data[5] = m_pRcvTimeWindow->getBandwidth();
+	         ctrlpkt.pack(pkttype, &m_iAckSeqNo, data, 24);
+
+	         CTimer::rdtsc(m_ullLastAckTime);
+	      }
+	      else
+	      {
+	         ctrlpkt.pack(pkttype, &m_iAckSeqNo, data, 16);
+	      }
+
+	      ctrlpkt.m_iID = m_PeerID;
+	      m_pSndQueue->sendto(m_pPeerAddr, ctrlpkt);
+
+	      m_pACKWindow->store(m_iAckSeqNo, m_iRcvLastAck);
+
+	      ++ m_iSentACK;
+	      ++ m_iSentACKTotal;
+	   }
+
+	   break;
+	   }
+	*/
+}
+
 func (s *udtSocket) sendNAK(rl receiveLossHeap) {
-	lossInfo := make([]uint32, 0)
-	var firstPkt uint32
-	var lastPkt uint32
+	lossInfo := make([]packet.PacketID, 0)
+	var firstPkt packet.PacketID
+	var lastPkt packet.PacketID
 
 	isFirst := true
 	rl.Sorted(func(e recvLossEntry) bool {
@@ -370,4 +478,13 @@ func (s *udtSocket) sendNAK(rl receiveLossHeap) {
 	if err != nil {
 		log.Printf("Cannot send NAK: %s", err.Error())
 	}
+	/*
+			      // update next NAK time, which should wait enough time for the retansmission, but not too long
+		      m_ullNAKInt = (m_iRTT + 4 * m_iRTTVar) * m_ullCPUFrequency;
+		      int rcv_speed = m_pRcvTimeWindow->getPktRcvSpeed();
+		      if (rcv_speed > 0)
+		         m_ullNAKInt += (m_pRcvLossList->getLossLength() * 1000000ULL / rcv_speed) * m_ullCPUFrequency;
+		      if (m_ullNAKInt < m_ullMinNakInt)
+		         m_ullNAKInt = m_ullMinNakInt;
+	*/
 }

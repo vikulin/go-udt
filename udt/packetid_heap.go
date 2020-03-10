@@ -1,14 +1,16 @@
 package udt
 
+import "github.com/odysseus654/go-udt/udt/packet"
+
 // packetIdHeap defines a list of sorted packet IDs
-type packetIDHeap []uint32
+type packetIDHeap []packet.PacketID
 
 func (h packetIDHeap) Len() int {
 	return len(h)
 }
 
 func (h packetIDHeap) Less(i, j int) bool {
-	return h[i] < h[j]
+	return h[i].Seq < h[j].Seq
 }
 
 func (h packetIDHeap) Swap(i, j int) {
@@ -16,7 +18,7 @@ func (h packetIDHeap) Swap(i, j int) {
 }
 
 func (h *packetIDHeap) Push(x interface{}) { // Push and Pop use pointer receivers because they modify the slice's length, not just its contents.
-	*h = append(*h, x.(uint32))
+	*h = append(*h, x.(packet.PacketID))
 }
 
 func (h *packetIDHeap) Pop() interface{} {
@@ -25,18 +27,4 @@ func (h *packetIDHeap) Pop() interface{} {
 	x := old[n-1]
 	*h = old[0 : n-1]
 	return x
-}
-
-// Min returns the smallest packet ID in this heap
-func (h packetIDHeap) Min() (uint32, int) {
-	len := len(h)
-	idx := 0
-	for {
-		newIdx := idx * 2
-		if newIdx >= len {
-			return h[idx], idx
-		}
-		idx = newIdx
-	}
-	return 0, -1
 }

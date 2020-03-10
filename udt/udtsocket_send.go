@@ -42,6 +42,8 @@ func (s *udtSocket) goSendEvent() {
 				case *packet.NakPacket:
 					s.ingestNak(sp, evt.now)
 				}
+			case _ = <-s.ack2Event: // ACK2 unlocked
+				s.act2Event = nil
 			}
 		case sendStateSending: // recently sent something, waiting for SND before sending more
 			select {
@@ -69,6 +71,8 @@ func (s *udtSocket) goSendEvent() {
 				if !s.processSendLoss() || s.pktSeq%16 == 0 {
 					s.processSendExpire()
 				}
+			case _ = <-s.ack2Event: // ACK2 unlocked
+				s.act2Event = nil
 			}
 		case sendStateProcessDrop: // immediately re-process any drop list requests
 			if s.sndEvent != nil {
@@ -97,6 +101,8 @@ func (s *udtSocket) goSendEvent() {
 				case *packet.NakPacket:
 					s.ingestNak(sp, evt.now)
 				}
+			case _ = <-s.ack2Event: // ACK2 unlocked
+				s.act2Event = nil
 			}
 		}
 	}
@@ -247,9 +253,13 @@ func (s *udtSocket) ingestAck(p *packet.AckPacket, now time.Time) {
 	}
 
 	// Send back an ACK2 with the same ACK sequence number in this ACK.
-	err := s.sendPacket(&packet.Ack2Packet{AckSeqNo: p.AckSeqNo})
-	if err != nil {
-		log.Printf("Cannot send ACK2: %s", err.Error())
+	if s.ack2Event == nil {
+		err := s.sendPacket(&packet.Ack2Packet{AckSeqNo: p.AckSeqNo})
+		if err != nil {
+			log.Printf("Cannot send ACK2: %s", err.Error())
+		} else {
+			s.ack2Event = time.After(synTime)
+		}
 	}
 
 	// Update RTT and RTTVar.
@@ -296,7 +306,7 @@ func (s *udtSocket) ingestAck(p *packet.AckPacket, now time.Time) {
 // owned by: goSendEvent
 // ingestNak is called to process an NAK packet
 func (s *udtSocket) ingestNak(p *packet.NakPacket, now time.Time) {
-	newLossList := make([]uint32, 0)
+	newLossList := make([]packet.PacketID, 0)
 	clen := len(p.CmpLossInfo)
 	for idx := 0; idx < clen; idx++ {
 		thisEntry := p.CmpLossInfo[idx]

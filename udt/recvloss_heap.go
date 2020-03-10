@@ -3,10 +3,12 @@ package udt
 import (
 	"container/heap"
 	"time"
+
+	"github.com/odysseus654/go-udt/udt/packet"
 )
 
 type recvLossEntry struct {
-	packetID     uint32
+	packetID     packet.PacketID
 	lastFeedback time.Time
 	numNAK       uint
 }
@@ -19,7 +21,7 @@ func (h receiveLossHeap) Len() int {
 }
 
 func (h receiveLossHeap) Less(i, j int) bool {
-	return h[i].packetID < h[j].packetID
+	return h[i].packetID.Seq < h[j].packetID.Seq
 }
 
 func (h receiveLossHeap) Swap(i, j int) {
@@ -38,22 +40,44 @@ func (h *receiveLossHeap) Pop() interface{} {
 	return x
 }
 
-// Min returns the smallest packet ID in this heap
-func (h receiveLossHeap) Min() uint32 {
+// Min does a binary search of the heap for the entry with the lowest packetID greater than or equal to the specified value
+func (h receiveLossHeap) Min(greaterEqual packet.PacketID, lessEqual packet.PacketID) (packet.PacketID, int) {
 	len := len(h)
 	idx := 0
-	for {
-		newIdx := idx * 2
-		if newIdx >= len {
-			return h[idx].packetID
+	wrapped := greaterEqual.Seq > lessEqual.Seq
+	for idx < len {
+		pid := h[idx].packetID
+		var next int
+		if pid.Seq == greaterEqual.Seq {
+			return h[idx].packetID, idx
+		} else if pid.Seq >= greaterEqual.Seq {
+			next = idx * 2
+		} else {
+			next = idx*2 + 1
 		}
-		idx = newIdx
+		if next >= len && h[idx].packetID.Seq > greaterEqual.Seq && (wrapped || h[idx].packetID.Seq <= lessEqual.Seq) {
+			return h[idx].packetID, idx
+		}
+		idx = next
 	}
-	return 0
+
+	// can't find any packets with greater value, wrap around
+	if wrapped {
+		idx = 0
+		for {
+			next := idx * 2
+			if next >= len && h[idx].packetID.Seq <= lessEqual.Seq {
+				return h[idx].packetID, idx
+			}
+			idx = next
+		}
+	}
+	return packet.PacketID{0}, -1
 }
 
+/*
 // Max returns the largest packet ID in this heap
-func (h receiveLossHeap) Max() uint32 {
+func (h receiveLossHeap) Max() packet.PacketID {
 	len := len(h)
 	idx := 0
 	for {
@@ -91,16 +115,16 @@ func (h receiveLossHeap) sortedImpl(idx int, len int, iter func(recvLossEntry) b
 func (h receiveLossHeap) Sorted(iter func(recvLossEntry) bool) {
 	h.sortedImpl(0, len(h), iter)
 }
-
+*/
 // Find does a binary search of the heap for the specified packetID which is returned
-func (h receiveLossHeap) Find(packetID uint32) (*recvLossEntry, int) {
+func (h receiveLossHeap) Find(packetID packet.PacketID) (*recvLossEntry, int) {
 	len := len(h)
 	idx := 0
 	for idx < len {
 		pid := h[idx].packetID
 		if pid == packetID {
 			return &h[idx], idx
-		} else if pid > packetID {
+		} else if pid.Seq > packetID.Seq {
 			idx = idx * 2
 		} else {
 			idx = idx*2 + 1
@@ -110,7 +134,7 @@ func (h receiveLossHeap) Find(packetID uint32) (*recvLossEntry, int) {
 }
 
 // Remove does a binary search of the heap for the specified packetID, which is removed
-func (h *receiveLossHeap) Remove(packetID uint32) bool {
+func (h *receiveLossHeap) Remove(packetID packet.PacketID) bool {
 	len := len(*h)
 	idx := 0
 	for idx < len {
@@ -118,7 +142,7 @@ func (h *receiveLossHeap) Remove(packetID uint32) bool {
 		if pid == packetID {
 			heap.Remove(h, idx)
 			return true
-		} else if pid > packetID {
+		} else if pid.Seq > packetID.Seq {
 			idx = idx * 2
 		} else {
 			idx = idx*2 + 1

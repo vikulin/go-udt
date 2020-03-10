@@ -3,11 +3,13 @@ package udt
 import (
 	"container/heap"
 	"time"
+
+	"github.com/odysseus654/go-udt/udt/packet"
 )
 
 type acceptSockInfo struct {
 	sockID    uint32
-	initSeqNo uint32
+	initSeqNo packet.PacketID
 	lastTouch time.Time
 	sock      *udtSocket
 }
@@ -23,7 +25,7 @@ func (h acceptSockHeap) Less(i, j int) bool {
 	if h[i].sockID != h[j].sockID {
 		return h[i].sockID < h[j].sockID
 	}
-	return h[i].initSeqNo < h[j].initSeqNo
+	return h[i].initSeqNo.Seq < h[j].initSeqNo.Seq
 }
 
 func (h acceptSockHeap) Swap(i, j int) {
@@ -42,24 +44,24 @@ func (h *acceptSockHeap) Pop() interface{} {
 	return x
 }
 
-func (h acceptSockHeap) compare(sockID uint32, initSeqNo uint32, idx int) int {
+func (h acceptSockHeap) compare(sockID uint32, initSeqNo packet.PacketID, idx int) int {
 	if sockID < h[idx].sockID {
 		return -1
 	}
 	if sockID > h[idx].sockID {
 		return +1
 	}
-	if initSeqNo < h[idx].initSeqNo {
+	if initSeqNo.Seq < h[idx].initSeqNo.Seq {
 		return -1
 	}
-	if initSeqNo > h[idx].initSeqNo {
+	if initSeqNo.Seq > h[idx].initSeqNo.Seq {
 		return +1
 	}
 	return 0
 }
 
 // Find does a binary search of the heap for the specified packetID which is returned
-func (h acceptSockHeap) Find(sockID uint32, initSeqNo uint32) (*udtSocket, int) {
+func (h acceptSockHeap) Find(sockID uint32, initSeqNo packet.PacketID) (*udtSocket, int) {
 	len := len(h)
 	idx := 0
 	for idx < len {

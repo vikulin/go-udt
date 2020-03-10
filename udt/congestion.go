@@ -1,11 +1,15 @@
 package udt
 
+import (
+	"github.com/odysseus654/go-udt/udt/packet"
+)
+
 type NativeCongestionControl struct {
 	startupComplete bool
 	avgNAKNum       int // average number of NAKs in a congestion period
 	nakCount        int // current number of NAKs in the current period
 	decCount        int
-	lastDecSeq      uint32 // biggest sequence number when last time the packet sending rate is decreased
+	lastDecSeq      packet.PacketID // biggest sequence number when last time the packet sending rate is decreased
 }
 
 func (ncc NativeCongestionControl) Init(CongestionControlParms) {
@@ -13,7 +17,7 @@ func (ncc NativeCongestionControl) Init(CongestionControlParms) {
 	ncc.avgNAKNum = 1
 	ncc.nakCount = 1
 	ncc.decCount = 1
-	//ncc.lastDecSeq      uint32
+	//ncc.lastDecSeq      packet.PacketID
 }
 
 func (ncc NativeCongestionControl) Close(CongestionControlParms) {

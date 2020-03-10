@@ -8,8 +8,8 @@ import (
 
 type AckPacket struct {
 	ctrlHeader
-	AckSeqNo uint32 // ACK sequence number
-	PktSeqHi uint32 // The packet sequence number to which all the previous packets have been received (excluding)
+	AckSeqNo uint32   // ACK sequence number
+	PktSeqHi PacketID // The packet sequence number to which all the previous packets have been received (excluding)
 
 	// The below are optional
 	Rtt         uint32 // RTT (in microseconds)
@@ -29,7 +29,7 @@ func (p *AckPacket) WriteTo(buf []byte) (uint, error) {
 		return 0, err
 	}
 
-	endianness.PutUint32(buf[16:19], p.PktSeqHi)
+	endianness.PutUint32(buf[16:19], p.PktSeqHi.Seq)
 
 	if p.Rtt == 0 && p.RttVar == 0 && p.BuffAvail == 0 && p.PktRecvRate == 0 && p.EstLinkCap == 0 {
 		return 20, nil
@@ -56,7 +56,7 @@ func (p *AckPacket) readFrom(data []byte) (err error) {
 	if p.AckSeqNo, err = p.readHdrFrom(data); err != nil {
 		return err
 	}
-	p.PktSeqHi = endianness.Uint32(data[16:19])
+	p.PktSeqHi = PacketID{endianness.Uint32(data[16:19])}
 	if l >= 24 {
 		p.Rtt = endianness.Uint32(data[20:23])
 		if l >= 28 {

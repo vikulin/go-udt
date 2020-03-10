@@ -19,6 +19,7 @@ import (
 	"math/big"
 	"net"
 	"sync"
+	"time"
 )
 
 /*
@@ -31,11 +32,10 @@ func DialUDT(ctx context.Context, network string, laddr string, raddr *net.UDPAd
 		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
 	}
 
-	s, err := m.newSocket(raddr, false)
+	s, err := m.newSocket(raddr, false, !isStream)
 	if err != nil {
 		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
 	}
-	s.isDatagram = !isStream
 	err = s.startConnect()
 	if err != nil {
 		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
@@ -45,7 +45,7 @@ func DialUDT(ctx context.Context, network string, laddr string, raddr *net.UDPAd
 }
 
 const (
-	syn_time = 10000 // in microseconds
+	synTime time.Duration = 10000 // in microseconds
 )
 
 var (
