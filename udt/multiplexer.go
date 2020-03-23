@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"time"
 
 	"github.com/odysseus654/go-udt/udt/packet"
 )
@@ -100,7 +99,6 @@ func newMultiplexer(network string, laddr *net.UDPAddr, conn net.PacketConn) (m 
 		shutdown: make(chan struct{}, 1),
 	}
 
-	go m.goReceiveTick()
 	go m.goRead()
 	go m.goWrite()
 
@@ -341,22 +339,4 @@ func (m *multiplexer) sendPacket(destAddr *net.UDPAddr, destSockID uint32, ts ui
 	p.SetHeader(destSockID, ts)
 	m.pktOut <- packetWrapper{pkt: p, dest: destAddr}
 	return nil
-}
-
-// goReceiveTick runs in a goroutine and handles any receiving socket alarms
-func (m *multiplexer) goReceiveTick() {
-	ticker := time.NewTicker(10 * time.Millisecond) // SYN = 0.01s
-	shutdown := m.shutdown
-	for {
-		select {
-		case _, ok := <-shutdown:
-			ticker.Stop()
-			return
-		case tm := <-ticker.C:
-			m.sockets.Range(func(key, val interface{}) bool {
-				val.(*udtSocket).onReceiveTick(m, tm)
-				return true
-			})
-		}
-	}
 }

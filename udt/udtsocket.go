@@ -93,12 +93,17 @@ type udtSocket struct {
 	closed     chan struct{}     // closed when socket is closed
 
 	// receiver-owned data -- to only be changed by goReceiveEvent or functions it calls
-	farNextPktSeq packet.PacketID // the peer's next largest packet ID expected.
-	farRecdPktSeq packet.PacketID // the peer's last "received" packet ID (before any loss events)
-	largestACK    uint32          // receiver: largest ACK packet we've sent that has been acknowledged (by an ACK2).
-	recvPktPend   dataPacketHeap  // receiver: list of packets that are waiting to be processed.
-	recvLossList  receiveLossHeap // receiver: loss list. Owned by ????? (at minimum goReceiveEvent->ingestData, goReceiveEvent->ingestMsgDropReq)
-	ackHistory    ackHistoryHeap  // receiver: list of sent ACKs. Owned by ???? (at minimum goReceiveEvent->ingestAck2)
+	farNextPktSeq packet.PacketID  // the peer's next largest packet ID expected.
+	farRecdPktSeq packet.PacketID  // the peer's last "received" packet ID (before any loss events)
+	lastACK       uint32           // receiver: last ACK packet we've sent
+	largestACK    uint32           // receiver: largest ACK packet we've sent that has been acknowledged (by an ACK2).
+	recvPktPend   dataPacketHeap   // receiver: list of packets that are waiting to be processed.
+	recvLossList  receiveLossHeap  // receiver: loss list. Owned by ????? (at minimum goReceiveEvent->ingestData, goReceiveEvent->ingestMsgDropReq)
+	ackHistory    ackHistoryHeap   // receiver: list of sent ACKs. Owned by ???? (at minimum goReceiveEvent->ingestAck2)
+	sentAck       packet.PacketID  // receiver: largest packetID we've sent an ACK regarding
+	recvAck2      packet.PacketID  // receiver: largest packetID we've received an ACK2 from
+	ackSentEvent2 <-chan time.Time // receiver: if an ACK packet has recently sent, don't include link information in the next one
+	ackSentEvent  <-chan time.Time // receiver: if an ACK packet has recently sent, wait before resending it
 
 	// receiver-owned data -- to only be changed by readPacket or functions it calls
 	recvPktHistory     []time.Time     // receiver: list of recently received packets.
@@ -113,9 +118,11 @@ type udtSocket struct {
 	farFlowWinSize uint             // sender: the estimated peer available window size
 	expCount       uint             // sender: number of continuous EXP timeouts.
 	expResetCount  time.Time        // sender: the last time expCount was set to 1
+	recvAckSeq     packet.PacketID  // sender: largest packetID we've received an ACK from
+	sentAck2       uint32           // sender: largest ACK2 packet we've sent
 	sendLossList   packetIDHeap     // sender: loss list. Owned by ????? (at minimum goSendEvent->processSendLoss, goSendEvent->ingestNak)
 	sndEvent       <-chan time.Time // sender: if a packet is recently sent, this timer fires when SND completes
-	ack2Event      <-chan time.Time // sender: if an ACK2 packet has recently sent, wait SYN before sending another one
+	ack2SentEvent  <-chan time.Time // sender: if an ACK2 packet has recently sent, wait SYN before sending another one
 
 	// performance metrics
 	//PktSent      uint64        // number of sent data packets, including retransmissions
@@ -373,6 +380,9 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		s.farSockID = p.SockID
 		s.farNextPktSeq = p.InitPktSeq
 		s.farRecdPktSeq = p.InitPktSeq.Add(-1)
+		s.sentAck = p.InitPktSeq
+		s.recvAckSeq = p.InitPktSeq
+		s.recvAck2 = p.InitPktSeq
 		s.sendPktSeq = p.InitPktSeq
 		s.isDatagram = p.SockType == packet.TypeDGRAM
 		s.farFlowWinSize = uint(p.MaxFlowWinSize)
@@ -404,6 +414,8 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		s.farSockID = p.SockID
 		s.farNextPktSeq = p.InitPktSeq
 		s.farRecdPktSeq = p.InitPktSeq.Add(-1)
+		s.sentAck = p.InitPktSeq
+		s.recvAck2 = p.InitPktSeq
 		s.farFlowWinSize = uint(p.MaxFlowWinSize)
 
 		if s.mtu > uint(p.MaxPktSize) {
@@ -456,7 +468,7 @@ func (s *udtSocket) readPacket(m *multiplexer, p packet.Packet, from *net.UDPAdd
 		s.readHandshake(m, sp, from)
 	case *packet.ShutdownPacket: // sent by either peer
 		s.handleClose()
-	case *packet.AckPacket, *packet.NakPacket: // receiver -> sender
+	case *packet.AckPacket, *packet.LightAckPacket, *packet.NakPacket: // receiver -> sender
 		s.sendEvent <- recvPktEvent{pkt: p, now: now}
 	case *packet.DataPacket: // sender -> receiver
 		s.readData(sp, now)

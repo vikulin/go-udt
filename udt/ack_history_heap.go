@@ -2,11 +2,14 @@ package udt
 
 import (
 	"time"
+
+	"github.com/odysseus654/go-udt/udt/packet"
 )
 
 type ackHistoryEntry struct {
-	ackID    uint32
-	sendTime time.Time
+	ackID      uint32
+	lastPacket packet.PacketID
+	sendTime   time.Time
 }
 
 // receiveLossList defines a list of ACK records sorted by their ACK id

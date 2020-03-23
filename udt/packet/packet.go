@@ -30,11 +30,11 @@ const (
 	ptKeepalive  packetType = 0x1
 	ptAck        packetType = 0x2
 	ptNak        packetType = 0x3
-	ptCongestion packetType = 0x4 // unused
+	ptCongestion packetType = 0x4 // unused in ver4
 	ptShutdown   packetType = 0x5
 	ptAck2       packetType = 0x6
 	ptMsgDropReq packetType = 0x7
-	ptSpecialErr packetType = 0x8 // unused
+	ptSpecialErr packetType = 0x8 // undocumented but reference implementation seems to use it
 	ptUserDefPkt packetType = 0x7FFF
 )
 
@@ -133,7 +133,11 @@ func ReadPacketFrom(data []byte) (p Packet, err error) {
 		case ptKeepalive:
 			p = &KeepAlivePacket{}
 		case ptAck:
-			p = &AckPacket{}
+			if len(data) == 20 {
+				p = &LightAckPacket{}
+			} else {
+				p = &AckPacket{}
+			}
 		case ptNak:
 			p = &NakPacket{}
 		case ptCongestion:

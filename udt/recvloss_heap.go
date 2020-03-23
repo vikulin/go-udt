@@ -75,47 +75,6 @@ func (h receiveLossHeap) Min(greaterEqual packet.PacketID, lessEqual packet.Pack
 	return packet.PacketID{0}, -1
 }
 
-/*
-// Max returns the largest packet ID in this heap
-func (h receiveLossHeap) Max() packet.PacketID {
-	len := len(h)
-	idx := 0
-	for {
-		newIdx := idx*2 + 1
-		if newIdx >= len {
-			return h[idx].packetID
-		}
-		idx = newIdx
-	}
-	return 0
-}
-
-func (h receiveLossHeap) sortedImpl(idx int, len int, iter func(recvLossEntry) bool) bool {
-	next := idx * 2
-	if next < len {
-		if !h.sortedImpl(next, len, iter) {
-			return false
-		}
-	}
-	if !iter(h[idx]) {
-		return false
-	}
-
-	next++
-	if next < len {
-		if !h.sortedImpl(next, len, iter) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// Range calls the passed function in sorted order
-func (h receiveLossHeap) Sorted(iter func(recvLossEntry) bool) {
-	h.sortedImpl(0, len(h), iter)
-}
-*/
 // Find does a binary search of the heap for the specified packetID which is returned
 func (h receiveLossHeap) Find(packetID packet.PacketID) (*recvLossEntry, int) {
 	len := len(h)

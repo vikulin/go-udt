@@ -26,18 +26,15 @@ func (s *udtSocket) goReceiveEvent() {
 				s.ingestMsgDropReq(sp, evt.now)
 			case *packet.DataPacket:
 				s.ingestData(sp)
+			case *packet.ErrPacket:
+				s.ingestError(sp)
 			}
+		case _ = <-s.ackSentEvent:
+			s.ackSentEvent = nil
+		case _ = <-s.ackSentEvent2:
+			s.ackSentEvent2 = nil
 		}
 	}
-}
-
-// owned by: multiplexer SYN loop
-// called by the multiplexer on every SYN
-func (s *udtSocket) onReceiveTick(m *multiplexer, t time.Time) {
-	/* TODO: Query the system time to check if ACK, NAK, or EXP timer has
-	expired. If there is any, process the event (as described below
-	in this section) and reset the associated time variables. For
-	ACK, also check the ACK packet interval. */
 }
 
 /*
@@ -109,6 +106,9 @@ func (s *udtSocket) ingestAck2(p *packet.Ack2Packet, now time.Time) {
 	if ackHistEntry == nil {
 		return // this ACK not found
 	}
+	if s.recvAck2.BlindDiff(ackHistEntry.lastPacket) < 0 {
+		s.recvAck2 = ackHistEntry.lastPacket
+	}
 	heap.Remove(&s.ackHistory, ackIdx)
 
 	// Update the largest ACK number ever been acknowledged.
@@ -117,8 +117,10 @@ func (s *udtSocket) ingestAck2(p *packet.Ack2Packet, now time.Time) {
 	}
 
 	thisRTT := uint32(now.Sub(ackHistEntry.sendTime) / 1000)
-	s.rttVar = (s.rttVar*3 + absdiff(s.rtt, thisRTT)) / 4
-	s.rtt = (s.rtt*7 + thisRTT) / 8
+
+	s.rttVar = (s.rttVar*3 + absdiff(s.rtt, thisRTT)) >> 2
+	s.rtt = (s.rtt*7 + thisRTT) >> 3
+	m_pCC.setRTT(m_iRTT)
 
 	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.*/
 	s.resetAckNakPeriods()
@@ -337,139 +339,106 @@ func (s *udtSocket) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool 
 	return true
 }
 
-func (s *udtSocket) sendACK(lightAck bool) {
-	/*
-	   {
-	   int32_t ack;
+func (s *udtSocket) sendLightACK() {
+	var ack packet.PacketID
 
-	   // If there is no loss, the ACK is the current largest sequence number plus 1;
-	   // Otherwise it is the smallest sequence number in the receiver loss list.
-	   if (0 == m_pRcvLossList->getLossLength())
-	      ack = CSeqNo::incseq(m_iRcvCurrSeqNo);
-	   else
-	      ack = m_pRcvLossList->getFirstLostSeq();
+	// If there is no loss, the ACK is the current largest sequence number plus 1;
+	// Otherwise it is the smallest sequence number in the receiver loss list.
+	if s.recvLossList == nil {
+		ack = s.farNextPktSeq
+	} else {
+		ack = s.farRecdPktSeq.Add(1)
+	}
 
-	   if (ack == m_iRcvLastAckAck)
-	      break;
+	if ack != s.recvAck2 {
+		// send out a lite ACK
+		// to save time on buffer processing and bandwidth/AS measurement, a lite ACK only feeds back an ACK number
+		err := s.sendPacket(&packet.LightAckPacket{PktSeqHi: ack})
+		if err != nil {
+			log.Printf("Cannot send (light) ACK: %s", err.Error())
+		}
+	}
+}
 
-	   // send out a lite ACK
-	   // to save time on buffer processing and bandwidth/AS measurement, a lite ACK only feeds back an ACK number
-	   if (4 == size)
-	   {
-	      ctrlpkt.pack(pkttype, NULL, &ack, size);
-	      ctrlpkt.m_iID = m_PeerID;
-	      m_pSndQueue->sendto(m_pPeerAddr, ctrlpkt);
+func (s *udtSocket) sendACK() {
+	var ack packet.PacketID
 
-	      break;
-	   }
+	// If there is no loss, the ACK is the current largest sequence number plus 1;
+	// Otherwise it is the smallest sequence number in the receiver loss list.
+	if s.recvLossList == nil {
+		ack = s.farNextPktSeq
+	} else {
+		ack = s.farRecdPktSeq.Add(1)
+	}
 
-	   uint64_t currtime;
-	   CTimer::rdtsc(currtime);
+	if ack == s.recvAck2 {
+		return
+	}
 
-	   // There are new received packets to acknowledge, update related information.
-	   if (CSeqNo::seqcmp(ack, m_iRcvLastAck) > 0)
-	   {
-	      int acksize = CSeqNo::seqoff(m_iRcvLastAck, ack);
+	// only send out an ACK if we either are saying something new or the ackSentEvent has expired
+	if ack == s.sentAck && s.ackSentEvent != nil {
+		return
+	}
+	s.sentAck = ack
 
-	      m_iRcvLastAck = ack;
+	s.lastACK++
+	ackHist := &ackHistoryEntry{
+		ackID:      s.lastACK,
+		lastPacket: ack,
+		sendTime:   time.Now(),
+	}
+	if s.ackHistory == nil {
+		s.ackHistory = ackHistoryHeap{ackHist}
+		heap.Init(&s.ackHistory)
+	} else {
+		heap.Push(&s.ackHistory, ackHist)
+	}
 
-	      m_pRcvBuffer->ackData(acksize);
-
-	      // signal a waiting "recv" call if there is any data available
-	      #ifndef WIN32
-	         pthread_mutex_lock(&m_RecvDataLock);
-	         if (m_bSynRecving)
-	            pthread_cond_signal(&m_RecvDataCond);
-	         pthread_mutex_unlock(&m_RecvDataLock);
-	      #else
-	         if (m_bSynRecving)
-	            SetEvent(m_RecvDataCond);
-	      #endif
-
-	      // acknowledge any waiting epolls to read
-	      s_UDTUnited.m_EPoll.update_events(m_SocketID, m_sPollID, UDT_EPOLL_IN, true);
-	   }
-	   else if (ack == m_iRcvLastAck)
-	   {
-	      if ((currtime - m_ullLastAckTime) < ((m_iRTT + 4 * m_iRTTVar) * m_ullCPUFrequency))
-	         break;
-	   }
-	   else
-	      break;
-
-	   // Send out the ACK only if has not been received by the sender before
-	   if (CSeqNo::seqcmp(m_iRcvLastAck, m_iRcvLastAckAck) > 0)
-	   {
-	      int32_t data[6];
-
-	      m_iAckSeqNo = CAckNo::incack(m_iAckSeqNo);
-	      data[0] = m_iRcvLastAck;
-	      data[1] = m_iRTT;
-	      data[2] = m_iRTTVar;
-	      data[3] = m_pRcvBuffer->getAvailBufSize();
-	      // a minimum flow window of 2 is used, even if buffer is full, to break potential deadlock
-	      if (data[3] < 2)
-	         data[3] = 2;
-
-	      if (currtime - m_ullLastAckTime > m_ullSYNInt)
-	      {
-	         data[4] = m_pRcvTimeWindow->getPktRcvSpeed();
-	         data[5] = m_pRcvTimeWindow->getBandwidth();
-	         ctrlpkt.pack(pkttype, &m_iAckSeqNo, data, 24);
-
-	         CTimer::rdtsc(m_ullLastAckTime);
-	      }
-	      else
-	      {
-	         ctrlpkt.pack(pkttype, &m_iAckSeqNo, data, 16);
-	      }
-
-	      ctrlpkt.m_iID = m_PeerID;
-	      m_pSndQueue->sendto(m_pPeerAddr, ctrlpkt);
-
-	      m_pACKWindow->store(m_iAckSeqNo, m_iRcvLastAck);
-
-	      ++ m_iSentACK;
-	      ++ m_iSentACKTotal;
-	   }
-
-	   break;
-	   }
-	*/
+	p := &packet.AckPacket{
+		AckSeqNo:  s.lastACK,
+		PktSeqHi:  ack,
+		Rtt:       s.rtt,
+		RttVar:    s.rttVar,
+		BuffAvail: max(2, m_pRcvBuffer.getAvailBufSize()),
+	}
+	if s.ackSentEvent2 == nil {
+		p.includeLink = true
+		p.PktRecvRate = m_pRcvTimeWindow.getPktRcvSpeed()
+		p.EstLinkCap = m_pRcvTimeWindow.getBandwidth()
+		s.ackSentEvent2 = time.After(synTime)
+	}
+	err := s.sendPacket(p)
+	if err != nil {
+		log.Printf("Cannot send ACK: %s", err.Error())
+	}
+	s.ackSentEvent = time.After(m_iRTT + 4*m_iRTTVar)
 }
 
 func (s *udtSocket) sendNAK(rl receiveLossHeap) {
-	lossInfo := make([]packet.PacketID, 0)
-	var firstPkt packet.PacketID
-	var lastPkt packet.PacketID
+	lossInfo := make([]uint32, 0)
 
-	isFirst := true
-	rl.Sorted(func(e recvLossEntry) bool {
-		if isFirst {
-			firstPkt = e.packetID
-			lastPkt = e.packetID
-			isFirst = false
-			return true
+	curPkt := s.farRecdPktSeq
+	for curPkt != s.farNextPktSeq {
+		minPkt, idx := rl.Min(curPkt, s.farRecdPktSeq)
+		if idx < 0 {
+			break
 		}
 
-		thisID := e.packetID
-		if thisID == lastPkt+1 {
-			lastPkt = thisID
-		} else {
-			if firstPkt == lastPkt {
-				lossInfo = append(lossInfo, firstPkt&0x7FFFFFFF)
-			} else {
-				lossInfo = append(lossInfo, firstPkt|0x80000000, lastPkt&0x7FFFFFFF)
+		lastPkt := minPkt
+		for {
+			nextPkt := lastPkt.Add(1)
+			_, idx = rl.Find(nextPkt)
+			if idx < 0 {
+				break
 			}
-			firstPkt = thisID
-			lastPkt = thisID
+			lastPkt = nextPkt
 		}
-		return true
-	})
-	if firstPkt == lastPkt {
-		lossInfo = append(lossInfo, firstPkt&0x7FFFFFFF)
-	} else {
-		lossInfo = append(lossInfo, firstPkt|0x80000000, lastPkt&0x7FFFFFFF)
+
+		if lastPkt == minPkt {
+			lossInfo = append(lossInfo, minPkt.Seq&0x7FFFFFFF)
+		} else {
+			lossInfo = append(lossInfo, minPkt.Seq|0x80000000, lastPkt.Seq&0x7FFFFFFF)
+		}
 	}
 
 	err := s.sendPacket(&packet.NakPacket{
@@ -487,4 +456,9 @@ func (s *udtSocket) sendNAK(rl receiveLossHeap) {
 		      if (m_ullNAKInt < m_ullMinNakInt)
 		         m_ullNAKInt = m_ullMinNakInt;
 	*/
+}
+
+// owned by: goReceiveEvent
+// ingestData is called to process an (undocumented) OOB error packet
+func (s *udtSocket) ingestError(p *packet.DataPacket) {
 }

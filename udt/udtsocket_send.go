@@ -14,98 +14,71 @@ func (s *udtSocket) goSendEvent() {
 	messageOut := s.messageOut
 	closed := s.closed
 	for {
+		thisMsgChan := messageOut
 		switch s.sendState {
 		case sendStateIdle: // not waiting for anything, can send immediately
 			if s.msgPartialSend != nil { // we have a partial message waiting, try to send more of it now
 				s.processDataMsg(false, messageOut)
 				continue
 			}
-
-			select {
-			case _, ok := <-closed:
-				return
-			case msg, ok := <-messageOut:
-				if !ok {
-					return
-				}
-				s.msgPartialSend = msg
-				s.processDataMsg(true, messageOut)
-			case evt, ok := <-sendEvent:
-				if !ok {
-					return
-				}
-				s.expCount = 1
-				s.expResetCount = evt.now
-				switch sp := evt.pkt.(type) {
-				case *packet.AckPacket:
-					s.ingestAck(sp, evt.now)
-				case *packet.NakPacket:
-					s.ingestNak(sp, evt.now)
-				}
-			case _ = <-s.ack2Event: // ACK2 unlocked
-				s.act2Event = nil
-			}
-		case sendStateSending: // recently sent something, waiting for SND before sending more
-			select {
-			case _, ok := <-closed:
-				return
-			case evt, ok := <-sendEvent:
-				if !ok {
-					return
-				}
-				s.expCount = 1
-				s.expResetCount = evt.now
-				switch sp := evt.pkt.(type) {
-				case *packet.AckPacket:
-					s.ingestAck(sp, evt.now)
-				case *packet.NakPacket:
-					s.ingestNak(sp, evt.now)
-				}
-			case _ = <-s.sndEvent: // SND event
-				s.sndEvent = nil
-				if s.farFlowWinSize == 0 {
-					s.sendState = sendStateWaiting
-				} else {
-					s.sendState = sendStateIdle
-				}
-				if !s.processSendLoss() || s.pktSeq%16 == 0 {
-					s.processSendExpire()
-				}
-			case _ = <-s.ack2Event: // ACK2 unlocked
-				s.act2Event = nil
-			}
 		case sendStateProcessDrop: // immediately re-process any drop list requests
-			if s.sndEvent != nil {
-				s.sendState = sendStateSending
-			} else if s.farFlowWinSize == 0 {
-				s.sendState = sendStateWaiting
-			} else {
-				s.sendState = sendStateIdle
-			}
+			s.sendState = s.reevalSendState() // try to reconstruct what our state should be if it wasn't sendStateProcessDrop
 			if !s.processSendLoss() || s.pktSeq%16 == 0 {
 				s.processSendExpire()
 			}
-		case sendStateWaiting: // destination is full, waiting for them to process something and come back
-			select {
-			case _, ok := <-closed:
+			continue
+		default:
+			thisMsgChan = nil
+		}
+
+		select {
+		case _, ok := <-closed:
+			return
+		case msg, ok := <-thisMsgChan: // nil if we can't process outgoing messages right now
+			if !ok {
 				return
-			case evt, ok := <-sendEvent:
-				if !ok {
-					return
-				}
-				s.expCount = 1
-				s.expResetCount = evt.now
-				switch sp := evt.pkt.(type) {
-				case *packet.AckPacket:
-					s.ingestAck(sp, evt.now)
-				case *packet.NakPacket:
-					s.ingestNak(sp, evt.now)
-				}
-			case _ = <-s.ack2Event: // ACK2 unlocked
-				s.act2Event = nil
 			}
+			s.msgPartialSend = msg
+			s.processDataMsg(true, messageOut)
+		case evt, ok := <-sendEvent:
+			if !ok {
+				return
+			}
+			s.expCount = 1
+			s.expResetCount = evt.now
+			switch sp := evt.pkt.(type) {
+			case *packet.AckPacket:
+				s.ingestAck(sp, evt.now)
+			case *packet.LightAckPacket:
+				s.ingestLightAck(sp, evt.now)
+			case *packet.NakPacket:
+				s.ingestNak(sp, evt.now)
+			case *packet.CongestionPacket:
+				s.ingestCongestion(sp, evt.now)
+			}
+			s.sendState = s.reevalSendState()
+		case _ = <-s.sndEvent: // SND event
+			s.sndEvent = nil
+			if s.sendState == sendStateSending {
+				s.sendState = s.reevalSendState()
+				if !s.processSendLoss() || s.sendPktSeq.Seq%16 == 0 {
+					s.processSendExpire()
+				}
+			}
+		case _ = <-s.ack2SentEvent: // ACK2 unlocked
+			s.ack2SentEvent = nil
 		}
 	}
+}
+
+func (s *udtSocket) reevalSendState() sendState {
+	if s.sndEvent != nil {
+		return sendStateSending
+	}
+	if s.farFlowWinSize == 0 {
+		return sendStateWaiting
+	}
+	return sendStateIdle
 }
 
 // owned by: goSendEvent
@@ -242,37 +215,75 @@ func (s *udtSocket) sendDataPacket(dp *packet.DataPacket, isResend bool) {
 }
 
 // owned by: goSendEvent
+// ingestLightAck is called to process a "light" ACK packet
+func (s *udtSocket) ingestLightAck(p *packet.LightAckPacket, now time.Time) {
+	// Update the largest acknowledged sequence number.
+
+	pktSeqHi := p.PktSeqHi
+	diff := p.recvAckSeq.BlindDiff(pktSeqHi)
+	if diff > 0 {
+		p.iFlowWindowSize += diff
+		p.recvAckSeq = pktSeqHi
+	}
+}
+
+// owned by: goSendEvent
 // ingestAck is called to process an ACK packet
 func (s *udtSocket) ingestAck(p *packet.AckPacket, now time.Time) {
 	// Update the largest acknowledged sequence number.
+
+	// Send back an ACK2 with the same ACK sequence number in this ACK.
+	if s.ack2SentEvent == nil && p.AckSeqNo == s.sentAck2 {
+		s.sentAck2 = p.AckSeqNo
+		err := s.sendPacket(&packet.Ack2Packet{AckSeqNo: p.AckSeqNo})
+		if err != nil {
+			log.Printf("Cannot send ACK2: %s", err.Error())
+		} else {
+			s.ack2SentEvent = time.After(synTime)
+		}
+	}
 
 	pktSeqHi := p.PktSeqHi
 	if !s.assertValidSentPktID("ACK", pktSeqHi) {
 		//		s.senderFault(fmt.Errorf("FAULT: Received an ACK for packet %d, but the largest packet we've sent has been %d", p.sendPktSeq, pktSeqHi))
 		return
 	}
-
-	// Send back an ACK2 with the same ACK sequence number in this ACK.
-	if s.ack2Event == nil {
-		err := s.sendPacket(&packet.Ack2Packet{AckSeqNo: p.AckSeqNo})
-		if err != nil {
-			log.Printf("Cannot send ACK2: %s", err.Error())
-		} else {
-			s.ack2Event = time.After(synTime)
-		}
+	diff := p.recvAckSeq.BlindDiff(pktSeqHi)
+	if diff <= 0 {
+		return
 	}
 
+	p.iFlowWindowSize = p.BuffAvail
+	p.recvAckSeq = pktSeqHi
+
 	// Update RTT and RTTVar.
+	s.rttVar = (s.rttVar * 3 + absdiff(p.Rtt, s.rtt)) >> 2;
+	s.rtt = (s.rtt * 7 + p.Rtt) >> 3;
+	m_pCC->setRTT(m_iRTT);
 
 	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.
 	s.resetAckNakPeriods()
 
 	// Update flow window size.
+	if p.includeLink {
 
-	if p.Rtt != 0 || p.RttVar != 0 || p.BuffAvail != 0 || p.PktRecvRate != 0 || p.EstLinkCap != 0 {
-		// Update packet arrival rate: A = (A * 7 + a) / 8, where a is the value carried in the ACK.
-		// Update estimated link capacity: B = (B * 7 + b) / 8, where b is the value carried in the ACK.
+		// Update Estimated Bandwidth and packet delivery rate
+		if p.PktRecvRate > 0 {
+			m_iDeliveryRate = (m_iDeliveryRate * 7 + p.PktRecvRate) >> 3;
+		}
+
+		if p.EstLinkCap > 0 {
+			m_iBandwidth = (m_iBandwidth * 7 + p.EstLinkCap) >> 3;
+		}
+
+		m_pCC->setRcvRate(m_iDeliveryRate);
+		m_pCC->setBandwidth(m_iBandwidth);
 	}
+
+	m_pCC->onACK(ack);
+
+	// Update packet arrival rate: A = (A * 7 + a) / 8, where a is the value carried in the ACK.
+	// Update estimated link capacity: B = (B * 7 + b) / 8, where b is the value carried in the ACK.
 
 	// Update sender's buffer (by releasing the buffer that has been acknowledged).
 	if s.sendPktPend != nil {
@@ -352,4 +363,12 @@ func (s *udtSocket) ingestNak(p *packet.NakPacket, now time.Time) {
 	//	2) Update the SND period by rate control (see section 3.6).
 
 	//	3) Reset the EXP time variable.
+}
+
+// owned by: goSendEvent
+// ingestCongestion is called to process a (retired?) Congestion packet
+func (s *udtSocket) ingestCongestion(p *packet.NakPacket, now time.Time) {
+	// One way packet delay is increasing, so decrease the sending rate
+	m_ullInterval = (uint64_t)ceil(m_ullInterval * 1.125);
+	m_iLastDecSeq = m_iSndCurrSeqNo;
 }
