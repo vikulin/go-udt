@@ -9,7 +9,46 @@ import (
 	"github.com/odysseus654/go-udt/udt/packet"
 )
 
-func (s *udtSocket) goSendEvent() {
+type udtSocketSend struct {
+	// channels
+	closed     <-chan struct{}     // closed when socket is closed
+	sendEvent  <-chan recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
+	messageOut <-chan []byte       // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+
+	sendState      sendState        // current sender state
+	sendPktPend    dataPacketHeap   // list of packets that have been sent but not yet acknoledged
+	sendPktSeq     packet.PacketID  // the current packet sequence number
+	msgPartialSend []byte           // when a message can only partially fit in a socket, this is the remainder
+	msgSeq         uint32           // the current message sequence number
+	farFlowWinSize uint             // the estimated peer available window size
+	expCount       uint             // number of continuous EXP timeouts.
+	expResetCount  time.Time        // the last time expCount was set to 1
+	recvAckSeq     packet.PacketID  // largest packetID we've received an ACK from
+	sentAck2       uint32           // largest ACK2 packet we've sent
+	sendLossList   packetIDHeap     // loss list
+	sndEvent       <-chan time.Time // if a packet is recently sent, this timer fires when SND completes
+	ack2SentEvent  <-chan time.Time // if an ACK2 packet has recently sent, wait SYN before sending another one
+}
+
+func newUdtSocketSend(s *udtSocket, closed <-chan struct{}, sendEvent <-chan recvPktEvent, messageOut <-chan []byte) *udtSocketSend {
+	ss := &udtSocketSend{
+		expResetCount: s.created,
+		sendPktSeq:    packet.PacketID{randUint32()},
+		closed:        closed,
+		sendEvent:     sendEvent,
+		messageOut:    messageOut,
+	}
+	go ss.goSendEvent()
+	return ss
+}
+
+func (s *udtSocketSend) configureHandshake(p *packet.HandshakePacket) {
+	s.recvAckSeq = p.InitPktSeq
+	s.sendPktSeq = p.InitPktSeq
+	s.farFlowWinSize = uint(p.MaxFlowWinSize)
+}
+
+func (s *udtSocketSend) goSendEvent() {
 	sendEvent := s.sendEvent
 	messageOut := s.messageOut
 	closed := s.closed
@@ -71,7 +110,7 @@ func (s *udtSocket) goSendEvent() {
 	}
 }
 
-func (s *udtSocket) reevalSendState() sendState {
+func (s *udtSocketSend) reevalSendState() sendState {
 	if s.sndEvent != nil {
 		return sendStateSending
 	}
@@ -83,7 +122,7 @@ func (s *udtSocket) reevalSendState() sendState {
 
 // owned by: goSendEvent
 // try to pack a new data packet and send it
-func (s *udtSocket) processDataMsg(isFirst bool, inChan <-chan []byte) {
+func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan []byte) {
 	for s.msgPartialSend != nil {
 		state := packet.MbOnly
 		if s.isDatagram {
@@ -153,7 +192,7 @@ func (s *udtSocket) processDataMsg(isFirst bool, inChan <-chan []byte) {
 
 // owned by: goSendEvent
 // If the sender's loss list is not empty, retransmit the first packet in the list and remove it from the list.
-func (s *udtSocket) processSendLoss() bool {
+func (s *udtSocketSend) processSendLoss() bool {
 	if s.sendLossList == nil || s.sendPktPend == nil {
 		return false
 	}
@@ -181,7 +220,7 @@ func (s *udtSocket) processSendLoss() bool {
 
 // owned by: goSendEvent
 // we have a packed packet and a green light to send, so lets send this and mark it
-func (s *udtSocket) sendDataPacket(dp *packet.DataPacket, isResend bool) {
+func (s *udtSocketSend) sendDataPacket(dp *packet.DataPacket, isResend bool) {
 	if s.sendPktPend == nil {
 		s.sendPktPend = dataPacketHeap{dp}
 		heap.Init(&s.sendPktPend)
@@ -216,7 +255,7 @@ func (s *udtSocket) sendDataPacket(dp *packet.DataPacket, isResend bool) {
 
 // owned by: goSendEvent
 // ingestLightAck is called to process a "light" ACK packet
-func (s *udtSocket) ingestLightAck(p *packet.LightAckPacket, now time.Time) {
+func (s *udtSocketSend) ingestLightAck(p *packet.LightAckPacket, now time.Time) {
 	// Update the largest acknowledged sequence number.
 
 	pktSeqHi := p.PktSeqHi
@@ -229,7 +268,7 @@ func (s *udtSocket) ingestLightAck(p *packet.LightAckPacket, now time.Time) {
 
 // owned by: goSendEvent
 // ingestAck is called to process an ACK packet
-func (s *udtSocket) ingestAck(p *packet.AckPacket, now time.Time) {
+func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	// Update the largest acknowledged sequence number.
 
 	// Send back an ACK2 with the same ACK sequence number in this ACK.
@@ -257,9 +296,9 @@ func (s *udtSocket) ingestAck(p *packet.AckPacket, now time.Time) {
 	p.recvAckSeq = pktSeqHi
 
 	// Update RTT and RTTVar.
-	s.rttVar = (s.rttVar * 3 + absdiff(p.Rtt, s.rtt)) >> 2;
-	s.rtt = (s.rtt * 7 + p.Rtt) >> 3;
-	m_pCC->setRTT(m_iRTT);
+	s.rttVar = (s.rttVar*3 + absdiff(p.Rtt, s.rtt)) >> 2
+	s.rtt = (s.rtt*7 + p.Rtt) >> 3
+	m_pCC.setRTT(m_iRTT)
 
 	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.
 	s.resetAckNakPeriods()
@@ -269,18 +308,18 @@ func (s *udtSocket) ingestAck(p *packet.AckPacket, now time.Time) {
 
 		// Update Estimated Bandwidth and packet delivery rate
 		if p.PktRecvRate > 0 {
-			m_iDeliveryRate = (m_iDeliveryRate * 7 + p.PktRecvRate) >> 3;
+			m_iDeliveryRate = (m_iDeliveryRate*7 + p.PktRecvRate) >> 3
 		}
 
 		if p.EstLinkCap > 0 {
-			m_iBandwidth = (m_iBandwidth * 7 + p.EstLinkCap) >> 3;
+			m_iBandwidth = (m_iBandwidth*7 + p.EstLinkCap) >> 3
 		}
 
-		m_pCC->setRcvRate(m_iDeliveryRate);
-		m_pCC->setBandwidth(m_iBandwidth);
+		m_pCC.setRcvRate(m_iDeliveryRate)
+		m_pCC.setBandwidth(m_iBandwidth)
 	}
 
-	m_pCC->onACK(ack);
+	m_pCC.onACK(ack)
 
 	// Update packet arrival rate: A = (A * 7 + a) / 8, where a is the value carried in the ACK.
 	// Update estimated link capacity: B = (B * 7 + b) / 8, where b is the value carried in the ACK.
@@ -316,7 +355,7 @@ func (s *udtSocket) ingestAck(p *packet.AckPacket, now time.Time) {
 
 // owned by: goSendEvent
 // ingestNak is called to process an NAK packet
-func (s *udtSocket) ingestNak(p *packet.NakPacket, now time.Time) {
+func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 	newLossList := make([]packet.PacketID, 0)
 	clen := len(p.CmpLossInfo)
 	for idx := 0; idx < clen; idx++ {
@@ -367,8 +406,8 @@ func (s *udtSocket) ingestNak(p *packet.NakPacket, now time.Time) {
 
 // owned by: goSendEvent
 // ingestCongestion is called to process a (retired?) Congestion packet
-func (s *udtSocket) ingestCongestion(p *packet.NakPacket, now time.Time) {
+func (s *udtSocketSend) ingestCongestion(p *packet.NakPacket, now time.Time) {
 	// One way packet delay is increasing, so decrease the sending rate
-	m_ullInterval = (uint64_t)ceil(m_ullInterval * 1.125);
-	m_iLastDecSeq = m_iSndCurrSeqNo;
+	m_ullInterval = ceil(m_ullInterval * 1.125)
+	m_iLastDecSeq = m_iSndCurrSeqNo
 }

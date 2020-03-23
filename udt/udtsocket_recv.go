@@ -8,7 +8,45 @@ import (
 	"github.com/odysseus654/go-udt/udt/packet"
 )
 
-func (s *udtSocket) goReceiveEvent() {
+type udtSocketRecv struct {
+	// channels
+	closed    <-chan struct{}     // closed when socket is closed
+	recvEvent <-chan recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
+	messageIn chan<- []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
+
+	farNextPktSeq      packet.PacketID  // the peer's next largest packet ID expected.
+	farRecdPktSeq      packet.PacketID  // the peer's last "received" packet ID (before any loss events)
+	lastACK            uint32           // last ACK packet we've sent
+	largestACK         uint32           // largest ACK packet we've sent that has been acknowledged (by an ACK2).
+	recvPktPend        dataPacketHeap   // list of packets that are waiting to be processed.
+	recvLossList       receiveLossHeap  // loss list.
+	ackHistory         ackHistoryHeap   // list of sent ACKs.
+	sentAck            packet.PacketID  // largest packetID we've sent an ACK regarding
+	recvAck2           packet.PacketID  // largest packetID we've received an ACK2 from
+	ackSentEvent2      <-chan time.Time // if an ACK packet has recently sent, don't include link information in the next one
+	ackSentEvent       <-chan time.Time // if an ACK packet has recently sent, wait before resending it
+	recvPktHistory     []time.Time      // list of recently received packets.
+	recvPktPairHistory []time.Duration  // probing packet window.
+}
+
+func newUdtSocketRecv(s *udtSocket, closed <-chan struct{}, recvEvent <-chan recvPktEvent, messageIn chan<- []byte) *udtSocketRecv {
+	sr := &udtSocketRecv{
+		closed:    closed,
+		recvEvent: recvEvent,
+		messageIn: messageIn,
+	}
+	go sr.goReceiveEvent()
+	return sr
+}
+
+func (s *udtSocketRecv) configureHandshake(p *packet.HandshakePacket) {
+	s.farNextPktSeq = p.InitPktSeq
+	s.farRecdPktSeq = p.InitPktSeq.Add(-1)
+	s.sentAck = p.InitPktSeq
+	s.recvAck2 = p.InitPktSeq
+}
+
+func (s *udtSocketRecv) goReceiveEvent() {
 	recvEvent := s.recvEvent
 	closed := s.closed
 	for {
@@ -56,37 +94,6 @@ ACK is used to trigger an acknowledgement (ACK). Its period is set by
    should be used in the implementation.
 */
 
-// owned by: readPacket
-// readData is called when a data packet has been received for this socket
-func (s *udtSocket) readData(p *packet.DataPacket, now time.Time) {
-
-	/* If the sequence number of the current data packet is 16n + 1,
-	where n is an integer, record the time interval between this
-	packet and the last data packet in the Packet Pair Window. */
-	if (p.Seq.Seq-1)&0xf == 0 && s.recvPktHistory != nil {
-		lastTime := s.recvPktHistory[len(s.recvPktHistory)-1]
-		pairDist := now.Sub(lastTime)
-		if s.recvPktPairHistory == nil {
-			s.recvPktPairHistory = []time.Duration{pairDist}
-		} else {
-			s.recvPktPairHistory = append(s.recvPktPairHistory, pairDist)
-			if len(s.recvPktPairHistory) > 16 {
-				s.recvPktPairHistory = s.recvPktPairHistory[len(s.recvPktPairHistory)-16:]
-			}
-		}
-	}
-
-	// Record the packet arrival time in PKT History Window.
-	if s.recvPktHistory == nil {
-		s.recvPktHistory = []time.Time{now}
-	} else {
-		s.recvPktHistory = append(s.recvPktHistory, now)
-		if len(s.recvPktHistory) > 16 {
-			s.recvPktHistory = s.recvPktHistory[len(s.recvPktHistory)-16:]
-		}
-	}
-}
-
 func absdiff(a uint32, b uint32) uint32 {
 	if a < b {
 		return b - a
@@ -96,7 +103,7 @@ func absdiff(a uint32, b uint32) uint32 {
 
 // owned by: goReceiveEvent
 // ingestAck2 is called to process an ACK2 packet
-func (s *udtSocket) ingestAck2(p *packet.Ack2Packet, now time.Time) {
+func (s *udtSocketRecv) ingestAck2(p *packet.Ack2Packet, now time.Time) {
 	ackSeq := p.AckSeqNo
 	if s.ackHistory == nil {
 		return // no ACKs to search
@@ -129,7 +136,7 @@ func (s *udtSocket) ingestAck2(p *packet.Ack2Packet, now time.Time) {
 
 // owned by: goReceiveEvent
 // ingestMsgDropReq is called to process an message drop request packet
-func (s *udtSocket) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Time) {
+func (s *udtSocketRecv) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Time) {
 	stopSeq := p.LastSeq.Add(1)
 	for pktID := p.FirstSeq; pktID != stopSeq; pktID.Incr() {
 		// remove all these packets from the loss list
@@ -170,8 +177,35 @@ func (s *udtSocket) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Time) 
 
 // owned by: goReceiveEvent
 // ingestData is called to process a data packet
-func (s *udtSocket) ingestData(p *packet.DataPacket) {
+func (s *udtSocketRecv) ingestData(p *packet.DataPacket) {
 	seq := p.Seq
+
+	/* If the sequence number of the current data packet is 16n + 1,
+	where n is an integer, record the time interval between this
+	packet and the last data packet in the Packet Pair Window. */
+	if (seq.Seq-1)&0xf == 0 && s.recvPktHistory != nil {
+		lastTime := s.recvPktHistory[len(s.recvPktHistory)-1]
+		pairDist := now.Sub(lastTime)
+		if s.recvPktPairHistory == nil {
+			s.recvPktPairHistory = []time.Duration{pairDist}
+		} else {
+			s.recvPktPairHistory = append(s.recvPktPairHistory, pairDist)
+			if len(s.recvPktPairHistory) > 16 {
+				s.recvPktPairHistory = s.recvPktPairHistory[len(s.recvPktPairHistory)-16:]
+			}
+		}
+	}
+
+	// Record the packet arrival time in PKT History Window.
+	if s.recvPktHistory == nil {
+		s.recvPktHistory = []time.Time{now}
+	} else {
+		s.recvPktHistory = append(s.recvPktHistory, now)
+		if len(s.recvPktHistory) > 16 {
+			s.recvPktHistory = s.recvPktHistory[len(s.recvPktHistory)-16:]
+		}
+	}
+
 	/* If the sequence number of the current data packet is greater
 	than LRSN + 1, put all the sequence numbers between (but
 	excluding) these two values into the receiver's loss list and
@@ -213,7 +247,7 @@ func (s *udtSocket) ingestData(p *packet.DataPacket) {
 	s.attemptProcessPacket(p, true)
 }
 
-func (s *udtSocket) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool {
+func (s *udtSocketRecv) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool {
 	seq := p.Seq
 
 	// can we process this packet?
@@ -339,7 +373,7 @@ func (s *udtSocket) attemptProcessPacket(p *packet.DataPacket, isNew bool) bool 
 	return true
 }
 
-func (s *udtSocket) sendLightACK() {
+func (s *udtSocketRecv) sendLightACK() {
 	var ack packet.PacketID
 
 	// If there is no loss, the ACK is the current largest sequence number plus 1;
@@ -360,7 +394,7 @@ func (s *udtSocket) sendLightACK() {
 	}
 }
 
-func (s *udtSocket) sendACK() {
+func (s *udtSocketRecv) sendACK() {
 	var ack packet.PacketID
 
 	// If there is no loss, the ACK is the current largest sequence number plus 1;
@@ -414,7 +448,7 @@ func (s *udtSocket) sendACK() {
 	s.ackSentEvent = time.After(m_iRTT + 4*m_iRTTVar)
 }
 
-func (s *udtSocket) sendNAK(rl receiveLossHeap) {
+func (s *udtSocketRecv) sendNAK(rl receiveLossHeap) {
 	lossInfo := make([]uint32, 0)
 
 	curPkt := s.farRecdPktSeq
@@ -460,5 +494,5 @@ func (s *udtSocket) sendNAK(rl receiveLossHeap) {
 
 // owned by: goReceiveEvent
 // ingestData is called to process an (undocumented) OOB error packet
-func (s *udtSocket) ingestError(p *packet.DataPacket) {
+func (s *udtSocketRecv) ingestError(p *packet.ErrPacket) {
 }

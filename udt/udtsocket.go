@@ -86,43 +86,14 @@ type udtSocket struct {
 	rttVar          uint32        // receiver: roundtrip variance (in microseconds). ***TODO -- is this updated by the sender???
 
 	// channels
-	messageIn  chan []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
-	messageOut chan []byte       // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
-	recvEvent  chan recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
-	sendEvent  chan recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
-	closed     chan struct{}     // closed when socket is closed
+	messageIn  <-chan []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
+	messageOut chan<- []byte       // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+	recvEvent  chan<- recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
+	sendEvent  chan<- recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
+	closed     chan<- struct{}     // closed when socket is closed
 
-	// receiver-owned data -- to only be changed by goReceiveEvent or functions it calls
-	farNextPktSeq packet.PacketID  // the peer's next largest packet ID expected.
-	farRecdPktSeq packet.PacketID  // the peer's last "received" packet ID (before any loss events)
-	lastACK       uint32           // receiver: last ACK packet we've sent
-	largestACK    uint32           // receiver: largest ACK packet we've sent that has been acknowledged (by an ACK2).
-	recvPktPend   dataPacketHeap   // receiver: list of packets that are waiting to be processed.
-	recvLossList  receiveLossHeap  // receiver: loss list. Owned by ????? (at minimum goReceiveEvent->ingestData, goReceiveEvent->ingestMsgDropReq)
-	ackHistory    ackHistoryHeap   // receiver: list of sent ACKs. Owned by ???? (at minimum goReceiveEvent->ingestAck2)
-	sentAck       packet.PacketID  // receiver: largest packetID we've sent an ACK regarding
-	recvAck2      packet.PacketID  // receiver: largest packetID we've received an ACK2 from
-	ackSentEvent2 <-chan time.Time // receiver: if an ACK packet has recently sent, don't include link information in the next one
-	ackSentEvent  <-chan time.Time // receiver: if an ACK packet has recently sent, wait before resending it
-
-	// receiver-owned data -- to only be changed by readPacket or functions it calls
-	recvPktHistory     []time.Time     // receiver: list of recently received packets.
-	recvPktPairHistory []time.Duration // receiver: probing packet window.
-
-	// sender-owned data -- to only be changed by goSendEvent or functions it calls
-	sendState      sendState        // sender: current state
-	sendPktPend    dataPacketHeap   // sender: list of packets that have been sent but not yet acknoledged
-	sendPktSeq     packet.PacketID  // sender: the current packet sequence number
-	msgPartialSend []byte           // sender: when a message can only partially fit in a socket, this is the remainder
-	msgSeq         uint32           // sender: the current message sequence number
-	farFlowWinSize uint             // sender: the estimated peer available window size
-	expCount       uint             // sender: number of continuous EXP timeouts.
-	expResetCount  time.Time        // sender: the last time expCount was set to 1
-	recvAckSeq     packet.PacketID  // sender: largest packetID we've received an ACK from
-	sentAck2       uint32           // sender: largest ACK2 packet we've sent
-	sendLossList   packetIDHeap     // sender: loss list. Owned by ????? (at minimum goSendEvent->processSendLoss, goSendEvent->ingestNak)
-	sndEvent       <-chan time.Time // sender: if a packet is recently sent, this timer fires when SND completes
-	ack2SentEvent  <-chan time.Time // sender: if an ACK2 packet has recently sent, wait SYN before sending another one
+	send *udtSocketSend // reference to sending side of this socket
+	recv *udtSocketRecv // reference to receiving side of this socket
 
 	// performance metrics
 	//PktSent      uint64        // number of sent data packets, including retransmissions
@@ -304,27 +275,32 @@ func (s *udtSocket) SetWriteDeadline(t time.Time) error {
 // newSocket creates a new UDT socket, which will be configured afterwards as either an incoming our outgoing socket
 func newSocket(m *multiplexer, sockID uint32, isServer bool, isDatagram bool, raddr *net.UDPAddr) (s *udtSocket, err error) {
 	now := time.Now()
+
+	closed := make(chan struct{}, 1)
+	recvEvent := make(chan recvPktEvent, 256)
+	sendEvent := make(chan recvPktEvent, 256)
+	messageIn := make(chan []byte, 256)
+	messageOut := make(chan []byte, 256)
+
 	s = &udtSocket{
 		m:              m,
 		raddr:          raddr,
 		created:        now,
-		expResetCount:  now,
 		sockState:      sockStateInit,
 		udtVer:         4,
 		isServer:       isServer,
-		sendPktSeq:     packet.PacketID{randUint32()},
 		mtu:            m.mtu,
 		maxFlowWinSize: 25600, // todo: turn tunable (minimum 32)
 		isDatagram:     isDatagram,
 		sockID:         sockID,
-		messageIn:      make(chan []byte, 256),
-		messageOut:     make(chan []byte, 256),
-		recvEvent:      make(chan recvPktEvent, 256),
-		sendEvent:      make(chan recvPktEvent, 256),
-		closed:         make(chan struct{}, 1),
+		messageIn:      messageIn,
+		messageOut:     messageOut,
+		recvEvent:      recvEvent,
+		sendEvent:      sendEvent,
+		closed:         closed,
 	}
-	go s.goReceiveEvent()
-	go s.goSendEvent()
+	s.send = newUdtSocketSend(s, closed, sendEvent, messageOut)
+	s.recv = newUdtSocketRecv(s, closed, recvEvent, messageIn)
 
 	return
 }
@@ -343,7 +319,7 @@ func (s *udtSocket) sendHandshake(synCookie uint32, reqType packet.HandshakeReqT
 	return s.sendPacket(&packet.HandshakePacket{
 		UdtVer:         uint32(s.udtVer),
 		SockType:       sockType,
-		InitPktSeq:     s.sendPktSeq,
+		InitPktSeq:     s.send.sendPktSeq,
 		MaxPktSize:     uint32(s.mtu),            // maximum packet size (including UDP/IP headers)
 		MaxFlowWinSize: uint32(s.maxFlowWinSize), // maximum flow window size
 		ReqType:        reqType,
@@ -378,18 +354,13 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 	case sockStateInit: // server accepting a connection from a client
 		s.udtVer = int(p.UdtVer)
 		s.farSockID = p.SockID
-		s.farNextPktSeq = p.InitPktSeq
-		s.farRecdPktSeq = p.InitPktSeq.Add(-1)
-		s.sentAck = p.InitPktSeq
-		s.recvAckSeq = p.InitPktSeq
-		s.recvAck2 = p.InitPktSeq
-		s.sendPktSeq = p.InitPktSeq
 		s.isDatagram = p.SockType == packet.TypeDGRAM
-		s.farFlowWinSize = uint(p.MaxFlowWinSize)
 
 		if s.mtu > uint(p.MaxPktSize) {
 			s.mtu = uint(p.MaxPktSize)
 		}
+		s.recv.configureHandshake(p)
+		s.send.configureHandshake(p)
 		s.sockState = sockStateConnected
 
 		err := s.sendHandshake(p.SynCookie, packet.HsResponse)
@@ -407,20 +378,17 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		if p.ReqType != packet.HsResponse {
 			return true // not a response packet, ignore
 		}
-		if p.InitPktSeq != s.sendPktSeq {
+		if p.InitPktSeq != s.send.sendPktSeq {
 			s.sockState = sockStateCorrupted
 			return true
 		}
 		s.farSockID = p.SockID
-		s.farNextPktSeq = p.InitPktSeq
-		s.farRecdPktSeq = p.InitPktSeq.Add(-1)
-		s.sentAck = p.InitPktSeq
-		s.recvAck2 = p.InitPktSeq
-		s.farFlowWinSize = uint(p.MaxFlowWinSize)
 
 		if s.mtu > uint(p.MaxPktSize) {
 			s.mtu = uint(p.MaxPktSize)
 		}
+		s.recv.configureHandshake(p)
+		s.send.configureHandshake(p)
 		if s.farSockID != 0 {
 			// we've received a sockID from the server, hopefully this means we've finished the handshake
 			s.sockState = sockStateConnected
@@ -470,7 +438,5 @@ func (s *udtSocket) readPacket(m *multiplexer, p packet.Packet, from *net.UDPAdd
 		s.handleClose()
 	case *packet.AckPacket, *packet.LightAckPacket, *packet.NakPacket: // receiver -> sender
 		s.sendEvent <- recvPktEvent{pkt: p, now: now}
-	case *packet.DataPacket: // sender -> receiver
-		s.readData(sp, now)
 	}
 }
