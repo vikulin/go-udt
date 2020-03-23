@@ -26,37 +26,6 @@ type recvPktEvent struct {
 }
 
 /*
-type CongestionControlParms interface {
-	GetRTT() time.Duration
-	GetMTU() int
-	GetEstBandwidth() int
-	GetLastSentPktID() packet.PacketID
-	GetPktArrivalRate() int
-	SetAckInterval(numPkts int)
-	SetAckTimer(t time.Duration)
-	SetRTO(int)
-}
-
-type CongestionControl interface {
-	Init(CongestionControlParms)
-	Close(CongestionControlParms)
-	OnACK(CongestionControlParms)
-	OnNAK(CongestionControlParms)
-	OnTimeout(CongestionControlParms)
-	OnPktSent(CongestionControlParms)
-	OnPktRecv(CongestionControlParms)
-}
-*/
-type sendState int
-
-const (
-	sendStateIdle        sendState = iota // not waiting for anything, can send immediately
-	sendStateSending                      // recently sent something, waiting for SND before sending more
-	sendStateWaiting                      // destination is full, waiting for them to process something and come back
-	sendStateProcessDrop                  // immediately re-process any drop list requests
-)
-
-/*
 udtSocket encapsulates a UDT socket between a local and remote address pair, as
 defined by the UDT specification.  udtSocket implements the net.Conn interface
 so that it can be used anywhere that a stream-oriented network connection
@@ -82,8 +51,8 @@ type udtSocket struct {
 	//	expPeriod      time.Duration       // sender: expCount * (4 * RTT + RTTVar + 0.01s)
 	sndPeriod       time.Duration // sender: delay between sending packets.  Owned by congestion control, read by sendDataPacket
 	currPartialRead []byte        // stream connections: currently reading message (for partial reads). Owned by client caller (Read)
-	rtt             uint32        // receiver: estimated roundtrip time (microseconds). ***TODO -- is this updated by the sender???
-	rttVar          uint32        // receiver: roundtrip variance (in microseconds). ***TODO -- is this updated by the sender???
+	rtt             time.Duration // receiver: estimated roundtrip time. ***TODO -- is this updated by the sender???
+	rttVar          time.Duration // receiver: roundtrip variance. ***TODO -- is this updated by the sender???
 
 	// channels
 	messageIn  <-chan []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)

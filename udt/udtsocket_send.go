@@ -4,9 +4,19 @@ import (
 	"container/heap"
 	"fmt"
 	"log"
+	"math"
 	"time"
 
 	"github.com/odysseus654/go-udt/udt/packet"
+)
+
+type sendState int
+
+const (
+	sendStateIdle        sendState = iota // not waiting for anything, can send immediately
+	sendStateSending                      // recently sent something, waiting for SND before sending more
+	sendStateWaiting                      // destination is full, waiting for them to process something and come back
+	sendStateProcessDrop                  // immediately re-process any drop list requests
 )
 
 type udtSocketSend struct {
@@ -408,6 +418,6 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 // ingestCongestion is called to process a (retired?) Congestion packet
 func (s *udtSocketSend) ingestCongestion(p *packet.NakPacket, now time.Time) {
 	// One way packet delay is increasing, so decrease the sending rate
-	m_ullInterval = ceil(m_ullInterval * 1.125)
+	m_ullInterval = math.Ceil(m_ullInterval * 1.125)
 	m_iLastDecSeq = m_iSndCurrSeqNo
 }

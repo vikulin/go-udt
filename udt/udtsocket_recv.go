@@ -63,7 +63,7 @@ func (s *udtSocketRecv) goReceiveEvent() {
 			case *packet.MsgDropReqPacket:
 				s.ingestMsgDropReq(sp, evt.now)
 			case *packet.DataPacket:
-				s.ingestData(sp)
+				s.ingestData(sp, evt.now)
 			case *packet.ErrPacket:
 				s.ingestError(sp)
 			}
@@ -177,7 +177,7 @@ func (s *udtSocketRecv) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Ti
 
 // owned by: goReceiveEvent
 // ingestData is called to process a data packet
-func (s *udtSocketRecv) ingestData(p *packet.DataPacket) {
+func (s *udtSocketRecv) ingestData(p *packet.DataPacket, now time.Time) {
 	seq := p.Seq
 
 	/* If the sequence number of the current data packet is 16n + 1,
