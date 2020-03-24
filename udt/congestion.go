@@ -6,16 +6,39 @@ import (
 	"github.com/odysseus654/go-udt/udt/packet"
 )
 
+// CongestionControlParms permits a CongestionControl implementation to interface with the UDT socket
 type CongestionControlParms interface {
+	// GetSndCurrSeqNo is the most recently sent packet ID
 	GetSndCurrSeqNo() packet.PacketID
+
+	// SetCongestionWindowSize sets the size of the congestion window (in packets)
 	SetCongestionWindowSize(uint)
+
+	// GetCongestionWindowSize gets the size of the congestion window (in packets)
 	GetCongestionWindowSize() uint
+
+	// GetPacketSendPeriod gets the current delay between sending packets
 	GetPacketSendPeriod() time.Duration
+
+	// SetPacketSendPeriod sets the current delay between sending packets
 	SetPacketSendPeriod(time.Duration)
+
+	// GetMaxFlowWindow is the largest number of unacknowledged packets we can receive (in packets)
 	GetMaxFlowWindow() uint
+
+	// GetReceiveRate is the current calculated receive rate (in packets/sec)
 	GetReceiveRate() int
+
+	// GetBandwidth is the current calculated bandwidth (in packets/sec)
+	GetBandwidth() int
+
+	// GetRTT is the current calculated roundtrip time between peers
 	GetRTT() time.Duration
+
+	// GetMSS is the largest packet size we can currently send (in bytes)
 	GetMSS() uint
+
+	// SetACKPerid sets the time between ACKs sent to the peer
 	SetACKPeriod(time.Duration)
 }
 

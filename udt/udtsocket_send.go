@@ -24,6 +24,7 @@ type udtSocketSend struct {
 	closed     <-chan struct{}     // closed when socket is closed
 	sendEvent  <-chan recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
 	messageOut <-chan []byte       // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+	socket     *udtSocket
 
 	sendState      sendState        // current sender state
 	sendPktPend    dataPacketHeap   // list of packets that have been sent but not yet acknoledged
@@ -42,6 +43,7 @@ type udtSocketSend struct {
 
 func newUdtSocketSend(s *udtSocket, closed <-chan struct{}, sendEvent <-chan recvPktEvent, messageOut <-chan []byte) *udtSocketSend {
 	ss := &udtSocketSend{
+		socket:        s,
 		expResetCount: s.created,
 		sendPktSeq:    packet.PacketID{randUint32()},
 		closed:        closed,

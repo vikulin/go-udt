@@ -57,6 +57,7 @@ func (ncc NativeCongestionControl) OnACK(parms CongestionControlParms, ack packe
 	pktSendPeriod := parms.GetPacketSendPeriod()
 	recvRate := parms.GetReceiveRate()
 	rtt := parms.GetRTT()
+	bandwidth := parms.GetBandwidth()
 
 	// If the current status is in the slow start phase, set the congestion window
 	// size to the product of packet arrival rate and (RTT + SYN). Slow Start ends. Stop.
@@ -67,9 +68,9 @@ func (ncc NativeCongestionControl) OnACK(parms CongestionControlParms, ack packe
 		if cWndSize > parms.GetMaxFlowWindow() {
 			ncc.slowStart = false
 			if recvRate > 0 {
-				parms.SetPacketSendPeriod(time.Second / recvRate)
+				parms.SetPacketSendPeriod(time.Second / time.Duration(recvRate))
 			} else {
-				parms.SetPacketSendPeriod((rtt + ncc.rcInterval) / cWndSize)
+				parms.SetPacketSendPeriod((rtt + ncc.rcInterval) / time.Duration(cWndSize))
 			}
 		} else {
 			// During Slow Start, no rate increase
@@ -78,7 +79,7 @@ func (ncc NativeCongestionControl) OnACK(parms CongestionControlParms, ack packe
 		}
 	} else {
 		// Set the congestion window size (CWND) to: CWND = A * (RTT + SYN) + 16.
-		cWndSize = recvRate/1000000.0*(rtt+ncc.rcInterval) + 16
+		cWndSize = uint((float64(recvRate)/float64(time.Second))*float64(rtt+ncc.rcInterval) + 16)
 	}
 	if ncc.loss {
 		ncc.loss = false
@@ -105,9 +106,10 @@ func (ncc NativeCongestionControl) OnACK(parms CongestionControlParms, ack packe
 	var inc float64
 	const minInc float64 = 0.01
 
-	B := int64(ncc.bandwidth - 1000000.0/pktSendPeriod)
-	if (pktSendPeriod > ncc.lastDecPeriod) && ((ncc.bandwidth / 9) < B) {
-		B = ncc.bandwidth / 9
+	B := time.Duration(bandwidth) - time.Second/time.Duration(pktSendPeriod)
+	bandwidth9 := time.Duration(bandwidth / 9)
+	if (pktSendPeriod > ncc.lastDecPeriod) && (bandwidth9 < B) {
+		B = bandwidth9
 	}
 	if B <= 0 {
 		inc = minInc
@@ -116,7 +118,7 @@ func (ncc NativeCongestionControl) OnACK(parms CongestionControlParms, ack packe
 		// Beta = 1.5 * 10^(-6)
 
 		mss := parms.GetMSS()
-		inc = math.Pow10(int(math.Ceil(math.Log10(B*mss*8.0)))) * 0.0000015 / float64(mss)
+		inc = math.Pow10(int(math.Ceil(math.Log10(float64(B)*float64(mss)*8.0)))) * 0.0000015 / float64(mss)
 
 		if inc < minInc {
 			inc = minInc
@@ -124,7 +126,7 @@ func (ncc NativeCongestionControl) OnACK(parms CongestionControlParms, ack packe
 	}
 
 	// The SND period is updated as: SND = (SND * SYN) / (SND * inc + SYN).
-	parms.SetPacketSendPeriod((pktSendPeriod * ncc.rcInterval) / (pktSendPeriod*inc + ncc.rcInterval))
+	parms.SetPacketSendPeriod(time.Duration(float64(pktSendPeriod*ncc.rcInterval) / (float64(pktSendPeriod)*inc + float64(ncc.rcInterval))))
 }
 
 // OnNAK to be called when a loss report is received
@@ -135,13 +137,13 @@ func (ncc NativeCongestionControl) OnNAK(parms CongestionControlParms, losslist 
 		recvRate := parms.GetReceiveRate()
 		if recvRate > 0 {
 			// Set the sending rate to the receiving rate.
-			parms.SetPacketSendPeriod(time.Second / recvRate)
+			parms.SetPacketSendPeriod(time.Second / time.Duration(recvRate))
 			return
 		}
 		// If no receiving rate is observed, we have to compute the sending
 		// rate according to the current window size, and decrease it
 		// using the method below.
-		parms.SetPacketSendPeriod(parms.GetCongestionWindowSize() / (parms.GetRTT() + ncc.rcInterval))
+		parms.SetPacketSendPeriod(time.Duration(float64(time.Microsecond) * float64(parms.GetCongestionWindowSize()) / float64(parms.GetRTT()+ncc.rcInterval)))
 	}
 
 	ncc.loss = true
@@ -169,8 +171,8 @@ func (ncc NativeCongestionControl) OnNAK(parms CongestionControlParms, losslist 
 		ncc.lastDecSeq = parms.GetSndCurrSeqNo()
 
 		// remove global synchronization using randomization
-		srand(ncc.lastDecSeq)
-		m_iDecRandom = math.Ceil(ncc.avgNAKNum * (double(rand()) / RAND_MAX))
+		rand := float64(randUint32()) / math.MaxUint32
+		ncc.decRandom = int(math.Ceil(float64(ncc.avgNAKNum) * rand))
 		if ncc.decRandom < 1 {
 			ncc.decRandom = 1
 		}
@@ -185,7 +187,7 @@ func (ncc NativeCongestionControl) OnNAK(parms CongestionControlParms, losslist 
 		ncc.decCount++
 
 		// 0.875^5 = 0.51, rate should not be decreased by more than half within a congestion period
-		parms.SetPacketSendPeriod(math.Ceil(pktSendPeriod * 1.125))
+		parms.SetPacketSendPeriod(pktSendPeriod * 1125 / 1000)
 		ncc.lastDecSeq = parms.GetSndCurrSeqNo()
 	}
 }
@@ -194,10 +196,11 @@ func (ncc NativeCongestionControl) OnNAK(parms CongestionControlParms, losslist 
 func (ncc NativeCongestionControl) OnTimeout(parms CongestionControlParms) {
 	if ncc.slowStart {
 		ncc.slowStart = false
-		if m_iRcvRate > 0 {
-			parms.SetPacketSendPeriod(time.Second / parms.GetReceiveRate())
+		recvRate := parms.GetReceiveRate()
+		if recvRate > 0 {
+			parms.SetPacketSendPeriod(time.Second / time.Duration(recvRate))
 		} else {
-			parms.SetPacketSendPeriod(parms.GetCongestionWindowSize() / (parms.GetRTT() + ncc.rcInterval))
+			parms.SetPacketSendPeriod(time.Duration(float64(time.Microsecond) * float64(parms.GetCongestionWindowSize()) / float64(parms.GetRTT()+ncc.rcInterval)))
 		}
 	} else {
 		/*

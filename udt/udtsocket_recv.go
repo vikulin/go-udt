@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/furstenheim/nth_element/FloydRivest"
 	"github.com/odysseus654/go-udt/udt/packet"
 )
 
@@ -13,6 +14,7 @@ type udtSocketRecv struct {
 	closed    <-chan struct{}     // closed when socket is closed
 	recvEvent <-chan recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
 	messageIn chan<- []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
+	socket    *udtSocket
 
 	farNextPktSeq      packet.PacketID  // the peer's next largest packet ID expected.
 	farRecdPktSeq      packet.PacketID  // the peer's last "received" packet ID (before any loss events)
@@ -25,12 +27,15 @@ type udtSocketRecv struct {
 	recvAck2           packet.PacketID  // largest packetID we've received an ACK2 from
 	ackSentEvent2      <-chan time.Time // if an ACK packet has recently sent, don't include link information in the next one
 	ackSentEvent       <-chan time.Time // if an ACK packet has recently sent, wait before resending it
-	recvPktHistory     []time.Time      // list of recently received packets.
+	recvLastArrival    time.Time        // time of the most recent data packet arrival
+	recvLastProbe      time.Time        // time of the most recent data packet probe packet
+	recvPktHistory     []time.Duration  // list of recently received packets.
 	recvPktPairHistory []time.Duration  // probing packet window.
 }
 
 func newUdtSocketRecv(s *udtSocket, closed <-chan struct{}, recvEvent <-chan recvPktEvent, messageIn chan<- []byte) *udtSocketRecv {
 	sr := &udtSocketRecv{
+		socket:    s,
 		closed:    closed,
 		recvEvent: recvEvent,
 		messageIn: messageIn,
@@ -183,28 +188,32 @@ func (s *udtSocketRecv) ingestData(p *packet.DataPacket, now time.Time) {
 	/* If the sequence number of the current data packet is 16n + 1,
 	where n is an integer, record the time interval between this
 	packet and the last data packet in the Packet Pair Window. */
-	if (seq.Seq-1)&0xf == 0 && s.recvPktHistory != nil {
-		lastTime := s.recvPktHistory[len(s.recvPktHistory)-1]
-		pairDist := now.Sub(lastTime)
-		if s.recvPktPairHistory == nil {
-			s.recvPktPairHistory = []time.Duration{pairDist}
-		} else {
-			s.recvPktPairHistory = append(s.recvPktPairHistory, pairDist)
-			if len(s.recvPktPairHistory) > 16 {
-				s.recvPktPairHistory = s.recvPktPairHistory[len(s.recvPktPairHistory)-16:]
+	if (seq.Seq-1)&0xf == 0 {
+		if !s.recvLastProbe.IsZero() {
+			if s.recvPktPairHistory == nil {
+				s.recvPktPairHistory = []time.Duration{now.Sub(s.recvLastProbe)}
+			} else {
+				s.recvPktPairHistory = append(s.recvPktPairHistory, now.Sub(s.recvLastProbe))
+				if len(s.recvPktPairHistory) > 16 {
+					s.recvPktPairHistory = s.recvPktPairHistory[len(s.recvPktPairHistory)-16:]
+				}
 			}
 		}
+		s.recvLastProbe = now
 	}
 
 	// Record the packet arrival time in PKT History Window.
-	if s.recvPktHistory == nil {
-		s.recvPktHistory = []time.Time{now}
-	} else {
-		s.recvPktHistory = append(s.recvPktHistory, now)
-		if len(s.recvPktHistory) > 16 {
-			s.recvPktHistory = s.recvPktHistory[len(s.recvPktHistory)-16:]
+	if !s.recvLastArrival.IsZero() {
+		if s.recvPktHistory == nil {
+			s.recvPktHistory = []time.Duration{now.Sub(s.recvLastArrival)}
+		} else {
+			s.recvPktHistory = append(s.recvPktHistory, now.Sub(s.recvLastArrival))
+			if len(s.recvPktHistory) > 16 {
+				s.recvPktHistory = s.recvPktHistory[len(s.recvPktHistory)-16:]
+			}
 		}
 	}
+	s.recvLastArrival = now
 
 	/* If the sequence number of the current data packet is greater
 	than LRSN + 1, put all the sequence numbers between (but
@@ -387,11 +396,81 @@ func (s *udtSocketRecv) sendLightACK() {
 	if ack != s.recvAck2 {
 		// send out a lite ACK
 		// to save time on buffer processing and bandwidth/AS measurement, a lite ACK only feeds back an ACK number
-		err := s.sendPacket(&packet.LightAckPacket{PktSeqHi: ack})
+		err := s.socket.sendPacket(&packet.LightAckPacket{PktSeqHi: ack})
 		if err != nil {
 			log.Printf("Cannot send (light) ACK: %s", err.Error())
 		}
 	}
+}
+
+func (s *udtSocketRecv) getPktRcvSpeed() int {
+	// get median value, but cannot change the original value order in the window
+	if s.recvPktHistory == nil {
+		return 0
+	}
+
+	n := len(s.recvPktHistory)
+	var pktReplica = make(sortableDurnArray, n)
+	copy(pktReplica, s.recvPktHistory)
+
+	cutPos := n / 2
+	FloydRivest.Buckets(pktReplica, cutPos)
+	median := pktReplica[cutPos]
+
+	upper := median << 3  // upper bounds
+	lower := median >> 3  // lower bounds
+	count := 0            // number of entries inside bounds
+	var sum time.Duration // sum of values inside bounds
+
+	// median filtering
+	idx := 0
+	for i := 0; i < n; i++ {
+		if (pktReplica[idx] < upper) && (pktReplica[idx] > lower) {
+			count++
+			sum += pktReplica[idx]
+		}
+		idx++
+	}
+
+	// do we have enough valid values to return a value?
+	if count <= (n >> 1) {
+		return 0
+	}
+
+	// calculate speed
+	return int(time.Second * time.Duration(count) / sum)
+}
+
+func (s *udtSocketRecv) getBandwidth() int {
+	// get median value, but cannot change the original value order in the window
+	if s.recvPktPairHistory == nil {
+		return 0
+	}
+
+	n := len(s.recvPktPairHistory)
+	var pktReplica = make(sortableDurnArray, n)
+	copy(pktReplica, s.recvPktPairHistory)
+
+	cutPos := n / 2
+	FloydRivest.Buckets(pktReplica, cutPos)
+	median := pktReplica[cutPos]
+
+	upper := median << 3 // upper bounds
+	lower := median >> 3 // lower bounds
+	count := 1           // number of entries inside bounds
+	sum := median        // sum of values inside bounds
+
+	// median filtering
+	idx := 0
+	for i := 0; i < n; i++ {
+		if (pktReplica[idx] < upper) && (pktReplica[idx] > lower) {
+			count++
+			sum += pktReplica[idx]
+		}
+		idx++
+	}
+
+	return int(time.Second * time.Duration(count) / sum)
 }
 
 func (s *udtSocketRecv) sendACK() {
@@ -437,8 +516,8 @@ func (s *udtSocketRecv) sendACK() {
 	}
 	if s.ackSentEvent2 == nil {
 		p.includeLink = true
-		p.PktRecvRate = m_pRcvTimeWindow.getPktRcvSpeed()
-		p.EstLinkCap = m_pRcvTimeWindow.getBandwidth()
+		p.PktRecvRate = s.getPktRcvSpeed()
+		p.EstLinkCap = s.getBandwidth()
 		s.ackSentEvent2 = time.After(synTime)
 	}
 	err := s.sendPacket(p)
@@ -484,7 +563,7 @@ func (s *udtSocketRecv) sendNAK(rl receiveLossHeap) {
 	/*
 			      // update next NAK time, which should wait enough time for the retansmission, but not too long
 		      m_ullNAKInt = (m_iRTT + 4 * m_iRTTVar) * m_ullCPUFrequency;
-		      int rcv_speed = m_pRcvTimeWindow->getPktRcvSpeed();
+		      int rcv_speed = s.getPktRcvSpeed();
 		      if (rcv_speed > 0)
 		         m_ullNAKInt += (m_pRcvLossList->getLossLength() * 1000000ULL / rcv_speed) * m_ullCPUFrequency;
 		      if (m_ullNAKInt < m_ullMinNakInt)
