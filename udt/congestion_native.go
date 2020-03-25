@@ -55,9 +55,8 @@ func (ncc NativeCongestionControl) OnACK(parms CongestionControlParms, ack packe
 	ncc.lastRCTime = currTime
 	cWndSize := parms.GetCongestionWindowSize()
 	pktSendPeriod := parms.GetPacketSendPeriod()
-	recvRate := parms.GetReceiveRate()
+	recvRate, bandwidth := parms.GetReceiveRates()
 	rtt := parms.GetRTT()
-	bandwidth := parms.GetBandwidth()
 
 	// If the current status is in the slow start phase, set the congestion window
 	// size to the product of packet arrival rate and (RTT + SYN). Slow Start ends. Stop.
@@ -134,7 +133,7 @@ func (ncc NativeCongestionControl) OnNAK(parms CongestionControlParms, losslist 
 	// If it is in slow start phase, set inter-packet interval to 1/recvrate. Slow start ends. Stop.
 	if ncc.slowStart {
 		ncc.slowStart = false
-		recvRate := parms.GetReceiveRate()
+		recvRate, bandwidth := parms.GetReceiveRates()
 		if recvRate > 0 {
 			// Set the sending rate to the receiving rate.
 			parms.SetPacketSendPeriod(time.Second / time.Duration(recvRate))
@@ -196,7 +195,7 @@ func (ncc NativeCongestionControl) OnNAK(parms CongestionControlParms, losslist 
 func (ncc NativeCongestionControl) OnTimeout(parms CongestionControlParms) {
 	if ncc.slowStart {
 		ncc.slowStart = false
-		recvRate := parms.GetReceiveRate()
+		recvRate, bandwidth := parms.GetReceiveRates()
 		if recvRate > 0 {
 			parms.SetPacketSendPeriod(time.Second / time.Duration(recvRate))
 		} else {

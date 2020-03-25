@@ -6,11 +6,36 @@ import (
 	"github.com/odysseus654/go-udt/udt/packet"
 )
 
+type congMsgType int
+
+const (
+	congInit congMsgType = iota
+	congClose
+	congOnACK
+	congOnNAK
+	congOnTimeout
+	congOnDataPktSent
+	congOnPktSent
+	congOnPktRecv
+	congOnCustomMsg
+)
+
+type congMsg struct {
+	mtyp  congMsgType
+	pktID packet.PacketID
+	arg   interface{}
+}
+
 type udtSocketCc struct {
 	// channels
 	closed     <-chan struct{} // closed when socket is closed
 	socket     *udtSocket
 	congestion CongestionControl // congestion control object for this socket
+	msgs       chan congMsg
+
+	sendPktSeq packet.PacketID // packetID of most recently sent packet
+	congWindow uint            // size of congestion window (in packets)
+	sndPeriod  time.Duration   // delay between sending packets
 }
 
 func newUdtSocketCc(s *udtSocket, closed <-chan struct{}) *udtSocketCc {
@@ -23,77 +48,146 @@ func newUdtSocketCc(s *udtSocket, closed <-chan struct{}) *udtSocketCc {
 		socket:     s,
 		closed:     closed,
 		congestion: newCongestion(s),
+		msgs:       make(chan congMsg, 100),
 	}
-	//go sr.goCongestionEvent()
+	go sc.goCongestionEvent()
 	return sc
 }
 
+func (s *udtSocketCc) goCongestionEvent() {
+	msgs := s.msgs
+	closed := s.closed
+	for {
+		select {
+		case evt, ok := <-msgs:
+			if !ok {
+				return
+			}
+			switch evt.mtyp {
+			case congInit:
+				s.sendPktSeq = evt.pktID
+				s.congestion.Init(s)
+			case congClose:
+				s.congestion.Close(s)
+			case congOnACK:
+				s.congestion.OnACK(s, evt.pktID)
+			case congOnNAK:
+				s.congestion.OnNAK(s, evt.arg.([]packet.PacketID))
+			case congOnTimeout:
+				s.congestion.OnTimeout(s)
+			case congOnDataPktSent:
+				s.sendPktSeq = evt.pktID
+			case congOnPktSent:
+				s.congestion.OnPktSent(s, evt.arg.(packet.Packet))
+			case congOnPktRecv:
+				s.congestion.OnPktRecv(s, evt.arg.(packet.DataPacket))
+			case congOnCustomMsg:
+				s.congestion.OnCustomMsg(s, evt.arg.(packet.UserDefControlPacket))
+			}
+		case _, ok := <-closed:
+			return
+		}
+	}
+}
+
 // Init to be called (only) at the start of a UDT connection.
-func (s *udtSocketCc) init() {
-	s.congestion.Init(s)
+func (s *udtSocketCc) init(sendPktSeq packet.PacketID) {
+	s.msgs <- congMsg{
+		mtyp:  congInit,
+		pktID: sendPktSeq,
+	}
 }
 
 // Close to be called when a UDT connection is closed.
 func (s *udtSocketCc) close() {
-	s.congestion.Close(s)
+	s.msgs <- congMsg{
+		mtyp: congClose,
+	}
 }
 
 // OnACK to be called when an ACK packet is received
 func (s *udtSocketCc) onACK(pktID packet.PacketID) {
-	s.congestion.OnACK(s, pktID)
+	s.msgs <- congMsg{
+		mtyp:  congOnACK,
+		pktID: pktID,
+	}
 }
 
 // OnNAK to be called when a loss report is received
 func (s *udtSocketCc) onNAK(loss []packet.PacketID) {
-	s.congestion.OnNAK(s, loss)
+	var ourLoss = make([]packet.PacketID, len(loss))
+	copy(ourLoss, loss)
+
+	s.msgs <- congMsg{
+		mtyp: congOnNAK,
+		arg:  ourLoss,
+	}
 }
 
 // OnTimeout to be called when a timeout event occurs
 func (s *udtSocketCc) onTimeout() {
-	s.congestion.OnTimeout(s)
+	s.msgs <- congMsg{
+		mtyp: congOnTimeout,
+	}
+}
+
+// OnPktSent to be called when data is sent
+func (s *udtSocketCc) onDataPktSent(pktID packet.PacketID) {
+	s.msgs <- congMsg{
+		mtyp:  congOnDataPktSent,
+		pktID: pktID,
+	}
 }
 
 // OnPktSent to be called when data is sent
 func (s *udtSocketCc) onPktSent(p packet.Packet) {
-	s.congestion.OnPktSent(s, p)
+	s.msgs <- congMsg{
+		mtyp: congOnPktSent,
+		arg:  p,
+	}
 }
 
 // OnPktRecv to be called when data is received
 func (s *udtSocketCc) onPktRecv(p packet.DataPacket) {
-	s.congestion.OnPktRecv(s, p)
+	s.msgs <- congMsg{
+		mtyp: congOnPktRecv,
+		arg:  p,
+	}
 }
 
 // OnCustomMsg to process a user-defined packet
 func (s *udtSocketCc) onCustomMsg(p packet.UserDefControlPacket) {
-	s.congestion.OnCustomMsg(s, p)
+	s.msgs <- congMsg{
+		mtyp: congOnCustomMsg,
+		arg:  p,
+	}
 }
 
 // GetSndCurrSeqNo is the most recently sent packet ID
 func (s *udtSocketCc) GetSndCurrSeqNo() packet.PacketID {
-	// TODO
-	return packet.PacketID{}
+	return s.sendPktSeq
 }
 
 // SetCongestionWindowSize sets the size of the congestion window (in packets)
-func (s *udtSocketCc) SetCongestionWindowSize(uint) {
-	// TODO
+func (s *udtSocketCc) SetCongestionWindowSize(pkt uint) {
+	s.congWindow = pkt
+	s.socket.send.SetCongestionWindowSize(pkt)
 }
 
 // GetCongestionWindowSize gets the size of the congestion window (in packets)
 func (s *udtSocketCc) GetCongestionWindowSize() uint {
-	// TODO
-	return 0
+	return s.congWindow
 }
 
 // GetPacketSendPeriod gets the current delay between sending packets
 func (s *udtSocketCc) GetPacketSendPeriod() time.Duration {
-	// TODO
-	return time.Duration(0)
+	return s.sndPeriod
 }
 
 // SetPacketSendPeriod sets the current delay between sending packets
-func (s *udtSocketCc) SetPacketSendPeriod(time.Duration) {
-	// TODO
+func (s *udtSocketCc) SetPacketSendPeriod(snd time.Duration) {
+	s.sndPeriod = snd
+	s.socket.send.SetPacketSendPeriod(snd)
 }
 
 // GetMaxFlowWindow is the largest number of unacknowledged packets we can receive (in packets)
@@ -102,16 +196,9 @@ func (s *udtSocketCc) GetMaxFlowWindow() uint {
 	return 0
 }
 
-// GetReceiveRate is the current calculated receive rate (in packets/sec)
-func (s *udtSocketCc) GetReceiveRate() int {
-	// TODO
-	return 0
-}
-
-// GetBandwidth is the current calculated bandwidth (in packets/sec)
-func (s *udtSocketCc) GetBandwidth() int {
-	// TODO
-	return 0
+// GetReceiveRates is the current calculated receive rate and bandwidth (in packets/sec)
+func (s *udtSocketCc) GetReceiveRates() (int, int) {
+	return s.socket.recv.getRcvSpeeds()
 }
 
 // GetRTT is the current calculated roundtrip time between peers

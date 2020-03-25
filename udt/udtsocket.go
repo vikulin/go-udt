@@ -50,7 +50,6 @@ type udtSocket struct {
 	//	ackPeriod      time.Duration       // receiver: used to (re-)send an ACK. Set by the congestion control module, never greater than 0.01s
 	//	nakPeriod      time.Duration       // receiver: used to (re-)send a NAK. 4 * RTT + RTTVar + 0.01s
 	//	expPeriod      time.Duration       // sender: expCount * (4 * RTT + RTTVar + 0.01s)
-	sndPeriod       time.Duration // sender: delay between sending packets.  Owned by congestion control, read by sendDataPacket
 	currPartialRead []byte        // stream connections: currently reading message (for partial reads). Owned by client caller (Read)
 	rtt             time.Duration // receiver: estimated roundtrip time. ***TODO -- is this updated by the sender???
 	rttVar          time.Duration // receiver: roundtrip variance. ***TODO -- is this updated by the sender???
@@ -281,7 +280,7 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 }
 
 func (s *udtSocket) startConnect() error {
-	s.cong.init()
+	s.cong.init(s.send.sendPktSeq)
 	s.sockState = sockStateConnecting
 	return s.sendHandshake(0, packet.HsRequest)
 }
@@ -329,7 +328,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 
 	switch s.sockState {
 	case sockStateInit: // server accepting a connection from a client
-		s.cong.init()
+		s.cong.init(p.InitPktSeq)
 		s.udtVer = int(p.UdtVer)
 		s.farSockID = p.SockID
 		s.isDatagram = p.SockType == packet.TypeDGRAM

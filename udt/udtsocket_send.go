@@ -4,7 +4,6 @@ import (
 	"container/heap"
 	"fmt"
 	"log"
-	"math"
 	"time"
 
 	"github.com/odysseus654/go-udt/udt/packet"
@@ -39,6 +38,7 @@ type udtSocketSend struct {
 	sendLossList   packetIDHeap     // loss list
 	sndEvent       <-chan time.Time // if a packet is recently sent, this timer fires when SND completes
 	ack2SentEvent  <-chan time.Time // if an ACK2 packet has recently sent, wait SYN before sending another one
+	sndPeriod      time.Duration    // delay between sending packets
 }
 
 func newUdtSocketSend(s *udtSocket, closed <-chan struct{}, sendEvent <-chan recvPktEvent, messageOut <-chan []byte) *udtSocketSend {
@@ -240,6 +240,7 @@ func (s *udtSocketSend) sendDataPacket(dp *packet.DataPacket, isResend bool) {
 		heap.Push(&s.sendPktPend, dp)
 	}
 
+	s.socket.cong.onDataPktSent(dp.Seq)
 	err := s.sendPacket(dp)
 	if err != nil {
 		log.Printf("Error sending data packet: %s", err.Error())
@@ -422,6 +423,6 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 // ingestCongestion is called to process a (retired?) Congestion packet
 func (s *udtSocketSend) ingestCongestion(p *packet.NakPacket, now time.Time) {
 	// One way packet delay is increasing, so decrease the sending rate
-	m_ullInterval = math.Ceil(m_ullInterval * 1.125)
-	m_iLastDecSeq = m_iSndCurrSeqNo
+	s.sndPeriod = s.sndPeriod * 1125 / 1000
+	m_iLastDecSeq = s.sendPktSeq
 }

@@ -3,6 +3,8 @@ package udt
 import (
 	"container/heap"
 	"log"
+	"math"
+	"sync"
 	"time"
 
 	"github.com/furstenheim/nth_element/FloydRivest"
@@ -16,21 +18,23 @@ type udtSocketRecv struct {
 	messageIn chan<- []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
 	socket    *udtSocket
 
-	farNextPktSeq      packet.PacketID  // the peer's next largest packet ID expected.
-	farRecdPktSeq      packet.PacketID  // the peer's last "received" packet ID (before any loss events)
-	lastACK            uint32           // last ACK packet we've sent
-	largestACK         uint32           // largest ACK packet we've sent that has been acknowledged (by an ACK2).
-	recvPktPend        dataPacketHeap   // list of packets that are waiting to be processed.
-	recvLossList       receiveLossHeap  // loss list.
-	ackHistory         ackHistoryHeap   // list of sent ACKs.
-	sentAck            packet.PacketID  // largest packetID we've sent an ACK regarding
-	recvAck2           packet.PacketID  // largest packetID we've received an ACK2 from
-	ackSentEvent2      <-chan time.Time // if an ACK packet has recently sent, don't include link information in the next one
-	ackSentEvent       <-chan time.Time // if an ACK packet has recently sent, wait before resending it
-	recvLastArrival    time.Time        // time of the most recent data packet arrival
-	recvLastProbe      time.Time        // time of the most recent data packet probe packet
-	recvPktHistory     []time.Duration  // list of recently received packets.
-	recvPktPairHistory []time.Duration  // probing packet window.
+	farNextPktSeq   packet.PacketID  // the peer's next largest packet ID expected.
+	farRecdPktSeq   packet.PacketID  // the peer's last "received" packet ID (before any loss events)
+	lastACK         uint32           // last ACK packet we've sent
+	largestACK      uint32           // largest ACK packet we've sent that has been acknowledged (by an ACK2).
+	recvPktPend     dataPacketHeap   // list of packets that are waiting to be processed.
+	recvLossList    receiveLossHeap  // loss list.
+	ackHistory      ackHistoryHeap   // list of sent ACKs.
+	sentAck         packet.PacketID  // largest packetID we've sent an ACK regarding
+	recvAck2        packet.PacketID  // largest packetID we've received an ACK2 from
+	ackSentEvent2   <-chan time.Time // if an ACK packet has recently sent, don't include link information in the next one
+	ackSentEvent    <-chan time.Time // if an ACK packet has recently sent, wait before resending it
+	recvLastArrival time.Time        // time of the most recent data packet arrival
+	recvLastProbe   time.Time        // time of the most recent data packet probe packet
+
+	recvPktWindowProt  sync.RWMutex    // lock must be held before referencing recvPktHistory/recvPktPairHistory
+	recvPktHistory     []time.Duration // list of recently received packets.
+	recvPktPairHistory []time.Duration // probing packet window.
 }
 
 func newUdtSocketRecv(s *udtSocket, closed <-chan struct{}, recvEvent <-chan recvPktEvent, messageIn chan<- []byte) *udtSocketRecv {
@@ -190,6 +194,7 @@ func (s *udtSocketRecv) ingestData(p *packet.DataPacket, now time.Time) {
 	/* If the sequence number of the current data packet is 16n + 1,
 	where n is an integer, record the time interval between this
 	packet and the last data packet in the Packet Pair Window. */
+	s.recvPktWindowProt.Lock()
 	if (seq.Seq-1)&0xf == 0 {
 		if !s.recvLastProbe.IsZero() {
 			if s.recvPktPairHistory == nil {
@@ -216,6 +221,7 @@ func (s *udtSocketRecv) ingestData(p *packet.DataPacket, now time.Time) {
 		}
 	}
 	s.recvLastArrival = now
+	s.recvPktWindowProt.Unlock()
 
 	/* If the sequence number of the current data packet is greater
 	than LRSN + 1, put all the sequence numbers between (but
@@ -405,74 +411,79 @@ func (s *udtSocketRecv) sendLightACK() {
 	}
 }
 
-func (s *udtSocketRecv) getPktRcvSpeed() int {
+func (s *udtSocketRecv) getRcvSpeeds() (recvSpeed, bandwidth int) {
+	var ourPktHistory sortableDurnArray
+	var ourProbeHistory sortableDurnArray
+
+	s.recvPktWindowProt.RLock()
+	if s.recvPktHistory != nil {
+		ourPktHistory = make(sortableDurnArray, len(s.recvPktHistory))
+		copy(ourPktHistory, s.recvPktHistory)
+	}
+
+	if s.recvPktPairHistory != nil {
+		ourProbeHistory = make(sortableDurnArray, len(s.recvPktPairHistory))
+		copy(ourProbeHistory, s.recvPktPairHistory)
+	}
+	s.recvPktWindowProt.RUnlock()
+
 	// get median value, but cannot change the original value order in the window
-	if s.recvPktHistory == nil {
-		return 0
-	}
+	if ourPktHistory != nil {
+		n := len(ourPktHistory)
 
-	n := len(s.recvPktHistory)
-	var pktReplica = make(sortableDurnArray, n)
-	copy(pktReplica, s.recvPktHistory)
+		cutPos := n / 2
+		FloydRivest.Buckets(ourPktHistory, cutPos)
+		median := ourPktHistory[cutPos]
 
-	cutPos := n / 2
-	FloydRivest.Buckets(pktReplica, cutPos)
-	median := pktReplica[cutPos]
+		upper := median << 3  // upper bounds
+		lower := median >> 3  // lower bounds
+		count := 0            // number of entries inside bounds
+		var sum time.Duration // sum of values inside bounds
 
-	upper := median << 3  // upper bounds
-	lower := median >> 3  // lower bounds
-	count := 0            // number of entries inside bounds
-	var sum time.Duration // sum of values inside bounds
-
-	// median filtering
-	idx := 0
-	for i := 0; i < n; i++ {
-		if (pktReplica[idx] < upper) && (pktReplica[idx] > lower) {
-			count++
-			sum += pktReplica[idx]
+		// median filtering
+		idx := 0
+		for i := 0; i < n; i++ {
+			if (ourPktHistory[idx] < upper) && (ourPktHistory[idx] > lower) {
+				count++
+				sum += ourPktHistory[idx]
+			}
+			idx++
 		}
-		idx++
+
+		// do we have enough valid values to return a value?
+		// calculate speed
+		if count > (n >> 1) {
+			recvSpeed = int(time.Second * time.Duration(count) / sum)
+		}
 	}
 
-	// do we have enough valid values to return a value?
-	if count <= (n >> 1) {
-		return 0
-	}
-
-	// calculate speed
-	return int(time.Second * time.Duration(count) / sum)
-}
-
-func (s *udtSocketRecv) getBandwidth() int {
 	// get median value, but cannot change the original value order in the window
-	if s.recvPktPairHistory == nil {
-		return 0
-	}
+	if ourProbeHistory == nil {
+		n := len(ourProbeHistory)
 
-	n := len(s.recvPktPairHistory)
-	var pktReplica = make(sortableDurnArray, n)
-	copy(pktReplica, s.recvPktPairHistory)
+		cutPos := n / 2
+		FloydRivest.Buckets(ourProbeHistory, cutPos)
+		median := ourProbeHistory[cutPos]
 
-	cutPos := n / 2
-	FloydRivest.Buckets(pktReplica, cutPos)
-	median := pktReplica[cutPos]
+		upper := median << 3 // upper bounds
+		lower := median >> 3 // lower bounds
+		count := 1           // number of entries inside bounds
+		sum := median        // sum of values inside bounds
 
-	upper := median << 3 // upper bounds
-	lower := median >> 3 // lower bounds
-	count := 1           // number of entries inside bounds
-	sum := median        // sum of values inside bounds
-
-	// median filtering
-	idx := 0
-	for i := 0; i < n; i++ {
-		if (pktReplica[idx] < upper) && (pktReplica[idx] > lower) {
-			count++
-			sum += pktReplica[idx]
+		// median filtering
+		idx := 0
+		for i := 0; i < n; i++ {
+			if (ourProbeHistory[idx] < upper) && (ourProbeHistory[idx] > lower) {
+				count++
+				sum += ourProbeHistory[idx]
+			}
+			idx++
 		}
-		idx++
+
+		bandwidth = int(time.Second * time.Duration(count) / sum)
 	}
 
-	return int(time.Second * time.Duration(count) / sum)
+	return
 }
 
 func (s *udtSocketRecv) sendACK() {
@@ -514,12 +525,11 @@ func (s *udtSocketRecv) sendACK() {
 		PktSeqHi:  ack,
 		Rtt:       s.rtt,
 		RttVar:    s.rttVar,
-		BuffAvail: max(2, m_pRcvBuffer.getAvailBufSize()),
+		BuffAvail: math.Max(2, m_pRcvBuffer.getAvailBufSize()),
 	}
 	if s.ackSentEvent2 == nil {
 		p.includeLink = true
-		p.PktRecvRate = s.getPktRcvSpeed()
-		p.EstLinkCap = s.getBandwidth()
+		p.PktRecvRate, p.EstLinkCap = s.getPktRcvSpeeds()
 		s.ackSentEvent2 = time.After(synTime)
 	}
 	err := s.sendPacket(p)
@@ -565,7 +575,7 @@ func (s *udtSocketRecv) sendNAK(rl receiveLossHeap) {
 	/*
 			      // update next NAK time, which should wait enough time for the retansmission, but not too long
 		      m_ullNAKInt = (m_iRTT + 4 * m_iRTTVar) * m_ullCPUFrequency;
-		      int rcv_speed = s.getPktRcvSpeed();
+		      rcv_speed, _ := s.getPktRcvSpeeds();
 		      if (rcv_speed > 0)
 		         m_ullNAKInt += (m_pRcvLossList->getLossLength() * 1000000ULL / rcv_speed) * m_ullCPUFrequency;
 		      if (m_ullNAKInt < m_ullMinNakInt)

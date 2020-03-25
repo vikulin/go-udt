@@ -26,11 +26,8 @@ type CongestionControlParms interface {
 	// GetMaxFlowWindow is the largest number of unacknowledged packets we can receive (in packets)
 	GetMaxFlowWindow() uint
 
-	// GetReceiveRate is the current calculated receive rate (in packets/sec)
-	GetReceiveRate() int
-
-	// GetBandwidth is the current calculated bandwidth (in packets/sec)
-	GetBandwidth() int
+	// GetReceiveRates is the current calculated receive rate and bandwidth (in packets/sec)
+	GetReceiveRates() (recvSpeed, bandwidth int)
 
 	// GetRTT is the current calculated roundtrip time between peers
 	GetRTT() time.Duration
