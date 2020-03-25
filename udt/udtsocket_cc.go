@@ -203,8 +203,8 @@ func (s *udtSocketCc) GetReceiveRates() (int, int) {
 
 // GetRTT is the current calculated roundtrip time between peers
 func (s *udtSocketCc) GetRTT() time.Duration {
-	// TODO
-	return time.Duration(0)
+	rtt, _ := s.socket.getRTT()
+	return time.Duration(rtt) * time.Microsecond
 }
 
 // GetMSS is the largest packet size we can currently send (in bytes)

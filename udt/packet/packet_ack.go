@@ -15,7 +15,7 @@ type AckPacket struct {
 	BuffAvail uint32   // Available buffer size (in bytes)
 
 	// the following data is optional (not sent more than SYN)
-	includeLink bool
+	IncludeLink bool
 	PktRecvRate uint32 // Packets receiving rate (in number of packets per second)
 	EstLinkCap  uint32 // Estimated link capacity (in number of packets per second)
 }
@@ -34,7 +34,7 @@ func (p *AckPacket) WriteTo(buf []byte) (uint, error) {
 	endianness.PutUint32(buf[20:23], p.Rtt)
 	endianness.PutUint32(buf[24:27], p.RttVar)
 	endianness.PutUint32(buf[28:31], p.BuffAvail)
-	if p.includeLink {
+	if p.IncludeLink {
 		if l < 40 {
 			return 0, errors.New("packet too small")
 		}
@@ -59,7 +59,7 @@ func (p *AckPacket) readFrom(data []byte) (err error) {
 	p.RttVar = endianness.Uint32(data[24:27])
 	p.BuffAvail = endianness.Uint32(data[28:31])
 	if l >= 36 {
-		p.includeLink = true
+		p.IncludeLink = true
 		p.PktRecvRate = endianness.Uint32(data[32:35])
 		if l >= 40 {
 			p.EstLinkCap = endianness.Uint32(data[36:39])

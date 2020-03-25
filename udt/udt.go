@@ -1,3 +1,5 @@
+package udt
+
 /*
 Package udt provides a pure Go implementation of the UDT protocol per
 http://udt.sourceforge.net/doc/draft-gg-udt-03.txt.
@@ -9,7 +11,6 @@ implemented:
 - STREAM mode (only UDP is supported)
 
 */
-package udt
 
 import (
 	"context"

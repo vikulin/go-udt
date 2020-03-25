@@ -74,7 +74,7 @@ func (s *udtSocketSend) goSendEvent() {
 			}
 		case sendStateProcessDrop: // immediately re-process any drop list requests
 			s.sendState = s.reevalSendState() // try to reconstruct what our state should be if it wasn't sendStateProcessDrop
-			if !s.processSendLoss() || s.pktSeq%16 == 0 {
+			if !s.processSendLoss() || s.sendPktSeq.Seq%16 == 0 {
 				s.processSendExpire()
 			}
 			continue
@@ -137,14 +137,14 @@ func (s *udtSocketSend) reevalSendState() sendState {
 func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan []byte) {
 	for s.msgPartialSend != nil {
 		state := packet.MbOnly
-		if s.isDatagram {
+		if s.socket.isDatagram {
 			if isFirst {
 				state = packet.MbFirst
 			} else {
 				state = packet.MbMiddle
 			}
 		}
-		if isFirst || !s.isDatagram {
+		if isFirst || !s.socket.isDatagram {
 			s.msgSeq++
 		}
 
@@ -155,25 +155,25 @@ func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan []byte) {
 			var dp *packet.DataPacket
 			if msgLen == mtu {
 				dp = &packet.DataPacket{
-					Seq:  s.pktSeq,
+					Seq:  s.sendPktSeq,
 					Data: s.msgPartialSend,
 				}
 				s.msgPartialSend = nil
 			} else {
 				dp = &packet.DataPacket{
-					Seq:  s.pktSeq,
+					Seq:  s.sendPktSeq,
 					Data: s.msgPartialSend[0 : mtu-1],
 				}
 				s.msgPartialSend = s.msgPartialSend[mtu:]
 			}
-			s.pktSeq++
-			dp.SetMessageData(state, !s.isDatagram, s.msgSeq)
+			s.sendPktSeq.Incr()
+			dp.SetMessageData(state, !s.socket.isDatagram, s.msgSeq)
 			s.sendDataPacket(dp, false)
 			return
 		}
 
 		// we are not full -- send only if this is a datagram or there's nothing obvious left
-		if s.isDatagram {
+		if s.socket.isDatagram {
 			if isFirst {
 				state = packet.MbOnly
 			} else {
@@ -191,12 +191,12 @@ func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan []byte) {
 		}
 
 		dp := &packet.DataPacket{
-			Seq:  s.pktSeq,
+			Seq:  s.sendPktSeq,
 			Data: s.msgPartialSend,
 		}
 		s.msgPartialSend = nil
-		s.pktSeq++
-		dp.SetMessageData(state, !s.isDatagram, s.msgSeq)
+		s.sendPktSeq.Incr()
+		dp.SetMessageData(state, !s.socket.isDatagram, s.msgSeq)
 		s.sendDataPacket(dp, false)
 		return
 	}
@@ -241,7 +241,7 @@ func (s *udtSocketSend) sendDataPacket(dp *packet.DataPacket, isResend bool) {
 	}
 
 	s.socket.cong.onDataPktSent(dp.Seq)
-	err := s.sendPacket(dp)
+	err := s.socket.sendPacket(dp)
 	if err != nil {
 		log.Printf("Error sending data packet: %s", err.Error())
 	}
@@ -255,7 +255,7 @@ func (s *udtSocketSend) sendDataPacket(dp *packet.DataPacket, isResend bool) {
 		return
 	}
 
-	if !isResend && dp.Seq%16 == 0 {
+	if !isResend && dp.Seq.Seq%16 == 0 {
 		s.processSendExpire()
 		return
 	}
@@ -309,15 +309,13 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	p.recvAckSeq = pktSeqHi
 
 	// Update RTT and RTTVar.
-	s.rttVar = (s.rttVar*3 + absdiff(p.Rtt, s.rtt)) >> 2
-	s.rtt = (s.rtt*7 + p.Rtt) >> 3
-	m_pCC.setRTT(m_iRTT)
+	s.socket.applyRTT(p.Rtt)
 
 	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.
 	s.resetAckNakPeriods()
 
 	// Update flow window size.
-	if p.includeLink {
+	if p.IncludeLink {
 
 		// Update Estimated Bandwidth and packet delivery rate
 		if p.PktRecvRate > 0 {
@@ -421,8 +419,8 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 
 // owned by: goSendEvent
 // ingestCongestion is called to process a (retired?) Congestion packet
-func (s *udtSocketSend) ingestCongestion(p *packet.NakPacket, now time.Time) {
+func (s *udtSocketSend) ingestCongestion(p *packet.CongestionPacket, now time.Time) {
 	// One way packet delay is increasing, so decrease the sending rate
 	s.sndPeriod = s.sndPeriod * 1125 / 1000
-	m_iLastDecSeq = s.sendPktSeq
+	//m_iLastDecSeq = s.sendPktSeq
 }

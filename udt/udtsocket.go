@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/odysseus654/go-udt/udt/packet"
@@ -50,9 +51,11 @@ type udtSocket struct {
 	//	ackPeriod      time.Duration       // receiver: used to (re-)send an ACK. Set by the congestion control module, never greater than 0.01s
 	//	nakPeriod      time.Duration       // receiver: used to (re-)send a NAK. 4 * RTT + RTTVar + 0.01s
 	//	expPeriod      time.Duration       // sender: expCount * (4 * RTT + RTTVar + 0.01s)
-	currPartialRead []byte        // stream connections: currently reading message (for partial reads). Owned by client caller (Read)
-	rtt             time.Duration // receiver: estimated roundtrip time. ***TODO -- is this updated by the sender???
-	rttVar          time.Duration // receiver: roundtrip variance. ***TODO -- is this updated by the sender???
+	currPartialRead []byte // stream connections: currently reading message (for partial reads). Owned by client caller (Read)
+
+	rttProt sync.RWMutex // lock must be held before referencing rtt/rttVar
+	rtt     uint         // receiver: estimated roundtrip time. (in microseconds)
+	rttVar  uint         // receiver: roundtrip variance. (in microseconds)
 
 	// channels
 	messageIn  <-chan []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
@@ -391,6 +394,28 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 	}
 
 	return false
+}
+
+func absdiff(a uint, b uint) uint {
+	if a < b {
+		return b - a
+	}
+	return a - b
+}
+
+func (s *udtSocket) applyRTT(rtt uint) {
+	s.rttProt.Lock()
+	s.rttVar = (s.rttVar*3 + absdiff(s.rtt, rtt)) >> 2
+	s.rtt = (s.rtt*7 + rtt) >> 3
+	s.rttProt.Unlock()
+}
+
+func (s *udtSocket) getRTT() (rtt, rttVar uint) {
+	s.rttProt.RLock()
+	rtt = s.rtt
+	rttVar = s.rttVar
+	s.rttProt.RUnlock()
+	return
 }
 
 // owned by: multiplexer read loop

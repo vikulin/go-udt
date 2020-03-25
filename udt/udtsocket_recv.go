@@ -103,13 +103,6 @@ ACK is used to trigger an acknowledgement (ACK). Its period is set by
    should be used in the implementation.
 */
 
-func absdiff(a uint32, b uint32) uint32 {
-	if a < b {
-		return b - a
-	}
-	return a - b
-}
-
 // owned by: goReceiveEvent
 // ingestAck2 is called to process an ACK2 packet
 func (s *udtSocketRecv) ingestAck2(p *packet.Ack2Packet, now time.Time) {
@@ -132,11 +125,7 @@ func (s *udtSocketRecv) ingestAck2(p *packet.Ack2Packet, now time.Time) {
 		s.largestACK = ackSeq
 	}
 
-	thisRTT := uint32(now.Sub(ackHistEntry.sendTime) / 1000)
-
-	s.rttVar = (s.rttVar*3 + absdiff(s.rtt, thisRTT)) >> 2
-	s.rtt = (s.rtt*7 + thisRTT) >> 3
-	m_pCC.setRTT(m_iRTT)
+	s.socket.applyRTT(uint(now.Sub(ackHistEntry.sendTime) / time.Microsecond))
 
 	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.*/
 	s.resetAckNakPeriods()
@@ -520,23 +509,27 @@ func (s *udtSocketRecv) sendACK() {
 		heap.Push(&s.ackHistory, ackHist)
 	}
 
+	rtt, rttVar := s.socket.getRTT()
+
 	p := &packet.AckPacket{
 		AckSeqNo:  s.lastACK,
 		PktSeqHi:  ack,
-		Rtt:       s.rtt,
-		RttVar:    s.rttVar,
+		Rtt:       uint32(rtt),
+		RttVar:    uint32(rttVar),
 		BuffAvail: math.Max(2, m_pRcvBuffer.getAvailBufSize()),
 	}
 	if s.ackSentEvent2 == nil {
-		p.includeLink = true
-		p.PktRecvRate, p.EstLinkCap = s.getPktRcvSpeeds()
+		recvSpeed, bandwidth := s.getRcvSpeeds()
+		p.IncludeLink = true
+		p.PktRecvRate = uint32(recvSpeed)
+		p.EstLinkCap = uint32(bandwidth)
 		s.ackSentEvent2 = time.After(synTime)
 	}
-	err := s.sendPacket(p)
+	err := s.socket.sendPacket(p)
 	if err != nil {
 		log.Printf("Cannot send ACK: %s", err.Error())
 	}
-	s.ackSentEvent = time.After(m_iRTT + 4*m_iRTTVar)
+	s.ackSentEvent = time.After(time.Duration(rtt+4*rttVar) * time.Microsecond)
 }
 
 func (s *udtSocketRecv) sendNAK(rl receiveLossHeap) {
@@ -566,7 +559,7 @@ func (s *udtSocketRecv) sendNAK(rl receiveLossHeap) {
 		}
 	}
 
-	err := s.sendPacket(&packet.NakPacket{
+	err := s.socket.sendPacket(&packet.NakPacket{
 		CmpLossInfo: lossInfo,
 	})
 	if err != nil {
