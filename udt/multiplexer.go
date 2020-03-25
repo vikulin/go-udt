@@ -181,16 +181,13 @@ func discoverMTU(ourIP net.IP) (uint, error) {
 	return uint(mtu), nil
 }
 
-func (m *multiplexer) newSocket(peer *net.UDPAddr, isServer bool, isDatagram bool) (s *udtSocket, err error) {
+func (m *multiplexer) newSocket(config *Config, peer *net.UDPAddr, isServer bool, isDatagram bool) (s *udtSocket) {
 	sid := atomic.AddUint32(&m.nextSid, ^uint32(0))
 
-	s, err = newSocket(m, sid, isServer, isDatagram, peer)
-	if err != nil {
-		return nil, err
-	}
+	s = newSocket(m, config, sid, isServer, isDatagram, peer)
 
 	m.sockets.Store(sid, s)
-	return s, nil
+	return s
 }
 
 func (m *multiplexer) closeSocket(sockID uint32) bool {

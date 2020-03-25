@@ -31,6 +31,7 @@ type listener struct {
 	synHash        hash.Hash
 	acceptHist     acceptSockHeap
 	acceptHistProt sync.Mutex
+	config         *Config
 }
 
 // resolveAddr resolves addr, which may be a literal IP
@@ -106,7 +107,19 @@ func resolveAddr(ctx context.Context, network, addr string) (*net.UDPAddr, error
 ListenUDT listens for incoming UDT connections addressed to the local address
 laddr. See function net.ListenUDP for a description of net and laddr.
 */
-func ListenUDT(ctx context.Context, network string, addr string) (net.Listener, error) {
+func ListenUDT(network string, addr string) (net.Listener, error) {
+	return listenUDT(context.Background(), DefaultConfig(), network, addr)
+}
+
+/*
+ListenUDTContext listens for incoming UDT connections addressed to the local address
+laddr. See function net.ListenUDP for a description of net and laddr.
+*/
+func ListenUDTContext(ctx context.Context, network string, addr string) (net.Listener, error) {
+	return listenUDT(ctx, DefaultConfig(), network, addr)
+}
+
+func listenUDT(ctx context.Context, config *Config, network string, addr string) (net.Listener, error) {
 	m, err := multiplexerFor(ctx, network, addr)
 	if err != nil {
 		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
@@ -119,6 +132,7 @@ func ListenUDT(ctx context.Context, network string, addr string) (net.Listener, 
 		accept:    make(chan *udtSocket, 100),
 		closed:    make(chan struct{}, 1),
 		synHash:   sha1.New(), // it's weak but fast, hopefully we don't need *that* much security here
+		config:    config,
 	}
 
 	if ok := m.listenUDT(l); !ok {
@@ -239,7 +253,11 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 	now := time.Now()
 	l.acceptHistProt.Lock()
 	if l.acceptHist != nil {
-		l.acceptHist.Prune(pruneBefore)
+		replayWindow := l.config.ListenReplayWindow
+		if replayWindow <= 0 {
+			replayWindow = DefaultConfig().ListenReplayWindow
+		}
+		l.acceptHist.Prune(time.Now().Add(-replayWindow))
 		s, idx := l.acceptHist.Find(hsPacket.SockID, hsPacket.InitPktSeq)
 		if s != nil {
 			l.acceptHist[idx].lastTouch = now
@@ -248,11 +266,23 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 		}
 	}
 
-	s, err := l.m.newSocket(from, true, hsPacket.SockType == packet.TypeDGRAM)
-	if err != nil {
-		log.Printf("New socket creation from listener failed: %s", err.Error())
+	if !l.config.CanAcceptDgram && hsPacket.SockType == packet.TypeDGRAM {
+		log.Printf("Refusing new socket creation from listener requesting DGRAM")
 		return false
 	}
+	if !l.config.CanAcceptStream && hsPacket.SockType == packet.TypeSTREAM {
+		log.Printf("Refusing new socket creation from listener requesting STREAM")
+		return false
+	}
+	if l.config.CanAccept != nil {
+		err := l.config.CanAccept(hsPacket, from)
+		if err != nil {
+			log.Printf("New socket creation from listener rejected by config: %s", err.Error())
+			return false
+		}
+	}
+
+	s := l.m.newSocket(l.config, from, true, hsPacket.SockType == packet.TypeDGRAM)
 	l.acceptHistProt.Lock()
 	if l.acceptHist == nil {
 		l.acceptHist = []acceptSockInfo{acceptSockInfo{

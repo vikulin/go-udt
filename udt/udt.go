@@ -26,16 +26,25 @@ import (
 DialUDT establishes an outbound UDT connection using the supplied net, laddr and
 raddr.  See function net.DialUDP for a description of net, laddr and raddr.
 */
-func DialUDT(ctx context.Context, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
+func DialUDT(network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
+	return dialUDT(context.Background(), DefaultConfig(), network, laddr, raddr, isStream)
+}
+
+/*
+DialUDTContext establishes an outbound UDT connection using the supplied net, laddr and
+raddr.  See function net.DialUDP for a description of net, laddr and raddr.
+*/
+func DialUDTContext(ctx context.Context, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
+	return dialUDT(ctx, DefaultConfig(), network, laddr, raddr, isStream)
+}
+
+func dialUDT(ctx context.Context, config *Config, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
 	m, err := multiplexerFor(ctx, network, laddr)
 	if err != nil {
 		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
 	}
 
-	s, err := m.newSocket(raddr, false, !isStream)
-	if err != nil {
-		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
-	}
+	s := m.newSocket(config, raddr, false, !isStream)
 	err = s.startConnect()
 	if err != nil {
 		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}

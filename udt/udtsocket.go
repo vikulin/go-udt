@@ -33,14 +33,16 @@ so that it can be used anywhere that a stream-oriented network connection
 */
 type udtSocket struct {
 	// this data not changed after the socket is initialized and/or handshaked
-	m          *multiplexer // the multiplexer that handles this socket
-	raddr      *net.UDPAddr // the remote address
-	created    time.Time    // the time that this socket was created
-	udtVer     int          // UDT protcol version (normally 4.  Will we be supporting others?)
-	isDatagram bool         // if true then we're sending and receiving datagrams, otherwise we're a streaming socket
-	isServer   bool         // if true then we are behaving like a server, otherwise client (or rendezvous). Only useful during handshake
-	sockID     uint32       // our sockID
-	farSockID  uint32       // the peer's sockID
+	m          *multiplexer      // the multiplexer that handles this socket
+	raddr      *net.UDPAddr      // the remote address
+	created    time.Time         // the time that this socket was created
+	Config     *Config           // configuration parameters for this socket
+	congestion CongestionControl // congestion control object for this socket
+	udtVer     int               // UDT protcol version (normally 4.  Will we be supporting others?)
+	isDatagram bool              // if true then we're sending and receiving datagrams, otherwise we're a streaming socket
+	isServer   bool              // if true then we are behaving like a server, otherwise client (or rendezvous). Only useful during handshake
+	sockID     uint32            // our sockID
+	farSockID  uint32            // the peer's sockID
 
 	sockState      sockState // socket state - used mostly during handshakes
 	mtu            uint      // the negotiated maximum packet size
@@ -242,7 +244,7 @@ func (s *udtSocket) SetWriteDeadline(t time.Time) error {
 *******************************************************************************/
 
 // newSocket creates a new UDT socket, which will be configured afterwards as either an incoming our outgoing socket
-func newSocket(m *multiplexer, sockID uint32, isServer bool, isDatagram bool, raddr *net.UDPAddr) (s *udtSocket, err error) {
+func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isDatagram bool, raddr *net.UDPAddr) (s *udtSocket) {
 	now := time.Now()
 
 	closed := make(chan struct{}, 1)
@@ -253,6 +255,7 @@ func newSocket(m *multiplexer, sockID uint32, isServer bool, isDatagram bool, ra
 
 	s = &udtSocket{
 		m:              m,
+		Config:         config,
 		raddr:          raddr,
 		created:        now,
 		sockState:      sockStateInit,
@@ -270,6 +273,12 @@ func newSocket(m *multiplexer, sockID uint32, isServer bool, isDatagram bool, ra
 	}
 	s.send = newUdtSocketSend(s, closed, sendEvent, messageOut)
 	s.recv = newUdtSocketRecv(s, closed, recvEvent, messageIn)
+
+	newCongestion := config.CongestionForSocket
+	if newCongestion == nil {
+		newCongestion = DefaultConfig().CongestionForSocket
+	}
+	s.congestion = newCongestion(s)
 
 	return
 }
