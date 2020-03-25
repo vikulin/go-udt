@@ -33,16 +33,15 @@ so that it can be used anywhere that a stream-oriented network connection
 */
 type udtSocket struct {
 	// this data not changed after the socket is initialized and/or handshaked
-	m          *multiplexer      // the multiplexer that handles this socket
-	raddr      *net.UDPAddr      // the remote address
-	created    time.Time         // the time that this socket was created
-	Config     *Config           // configuration parameters for this socket
-	congestion CongestionControl // congestion control object for this socket
-	udtVer     int               // UDT protcol version (normally 4.  Will we be supporting others?)
-	isDatagram bool              // if true then we're sending and receiving datagrams, otherwise we're a streaming socket
-	isServer   bool              // if true then we are behaving like a server, otherwise client (or rendezvous). Only useful during handshake
-	sockID     uint32            // our sockID
-	farSockID  uint32            // the peer's sockID
+	m          *multiplexer // the multiplexer that handles this socket
+	raddr      *net.UDPAddr // the remote address
+	created    time.Time    // the time that this socket was created
+	Config     *Config      // configuration parameters for this socket
+	udtVer     int          // UDT protcol version (normally 4.  Will we be supporting others?)
+	isDatagram bool         // if true then we're sending and receiving datagrams, otherwise we're a streaming socket
+	isServer   bool         // if true then we are behaving like a server, otherwise client (or rendezvous). Only useful during handshake
+	sockID     uint32       // our sockID
+	farSockID  uint32       // the peer's sockID
 
 	sockState      sockState // socket state - used mostly during handshakes
 	mtu            uint      // the negotiated maximum packet size
@@ -65,6 +64,7 @@ type udtSocket struct {
 
 	send *udtSocketSend // reference to sending side of this socket
 	recv *udtSocketRecv // reference to receiving side of this socket
+	cong *udtSocketCc   // reference to contestion control
 
 	// performance metrics
 	//PktSent      uint64        // number of sent data packets, including retransmissions
@@ -202,6 +202,8 @@ func (s *udtSocket) Close() error {
 		return err
 	}
 
+	s.cong.close()
+
 	s.handleClose()
 	close(s.messageOut)
 	return nil
@@ -273,17 +275,13 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 	}
 	s.send = newUdtSocketSend(s, closed, sendEvent, messageOut)
 	s.recv = newUdtSocketRecv(s, closed, recvEvent, messageIn)
-
-	newCongestion := config.CongestionForSocket
-	if newCongestion == nil {
-		newCongestion = DefaultConfig().CongestionForSocket
-	}
-	s.congestion = newCongestion(s)
+	s.cong = newUdtSocketCc(s, closed)
 
 	return
 }
 
 func (s *udtSocket) startConnect() error {
+	s.cong.init()
 	s.sockState = sockStateConnecting
 	return s.sendHandshake(0, packet.HsRequest)
 }
@@ -309,6 +307,7 @@ func (s *udtSocket) sendHandshake(synCookie uint32, reqType packet.HandshakeReqT
 
 func (s *udtSocket) sendPacket(p packet.Packet) error {
 	ts := uint32(time.Now().Sub(s.created) / time.Microsecond)
+	s.cong.onPktSent(p)
 	return s.m.sendPacket(s.raddr, s.farSockID, ts, p)
 }
 
@@ -330,6 +329,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 
 	switch s.sockState {
 	case sockStateInit: // server accepting a connection from a client
+		s.cong.init()
 		s.udtVer = int(p.UdtVer)
 		s.farSockID = p.SockID
 		s.isDatagram = p.SockType == packet.TypeDGRAM
@@ -416,5 +416,7 @@ func (s *udtSocket) readPacket(m *multiplexer, p packet.Packet, from *net.UDPAdd
 		s.handleClose()
 	case *packet.AckPacket, *packet.LightAckPacket, *packet.NakPacket: // receiver -> sender
 		s.sendEvent <- recvPktEvent{pkt: p, now: now}
+	case *packet.UserDefControlPacket:
+		s.cong.onCustomMsg(*sp)
 	}
 }

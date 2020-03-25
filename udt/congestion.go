@@ -60,7 +60,7 @@ type CongestionControl interface {
 	OnTimeout(CongestionControlParms)
 
 	// OnPktSent to be called when data is sent
-	OnPktSent(CongestionControlParms, packet.DataPacket)
+	OnPktSent(CongestionControlParms, packet.Packet)
 
 	// OnPktRecv to be called when data is received
 	OnPktRecv(CongestionControlParms, packet.DataPacket)

@@ -331,7 +331,7 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 		m_pCC.setBandwidth(m_iBandwidth)
 	}
 
-	m_pCC.onACK(ack)
+	s.socket.cong.onACK(pktSeqHi)
 
 	// Update packet arrival rate: A = (A * 7 + a) / 8, where a is the value carried in the ACK.
 	// Update estimated link capacity: B = (B * 7 + b) / 8, where b is the value carried in the ACK.
@@ -400,6 +400,8 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 			newLossList = append(newLossList, thisEntry)
 		}
 	}
+
+	s.socket.cong.onNAK(newLossList)
 
 	if s.sendLossList == nil {
 		s.sendLossList = newLossList

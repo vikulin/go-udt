@@ -183,6 +183,8 @@ func (s *udtSocketRecv) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Ti
 // owned by: goReceiveEvent
 // ingestData is called to process a data packet
 func (s *udtSocketRecv) ingestData(p *packet.DataPacket, now time.Time) {
+	s.socket.cong.onPktRecv(*p)
+
 	seq := p.Seq
 
 	/* If the sequence number of the current data packet is 16n + 1,
@@ -574,4 +576,5 @@ func (s *udtSocketRecv) sendNAK(rl receiveLossHeap) {
 // owned by: goReceiveEvent
 // ingestData is called to process an (undocumented) OOB error packet
 func (s *udtSocketRecv) ingestError(p *packet.ErrPacket) {
+	// TODO: umm something
 }

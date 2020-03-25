@@ -213,7 +213,7 @@ func (ncc NativeCongestionControl) OnTimeout(parms CongestionControlParms) {
 }
 
 // OnPktSent to be called when data is sent
-func (ncc NativeCongestionControl) OnPktSent(parms CongestionControlParms, pkt packet.DataPacket) {
+func (ncc NativeCongestionControl) OnPktSent(parms CongestionControlParms, pkt packet.Packet) {
 	// nothing done for this event
 }
 
