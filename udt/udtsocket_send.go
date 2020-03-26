@@ -38,7 +38,7 @@ type udtSocketSend struct {
 	sendLossList   packetIDHeap     // loss list
 	sndEvent       <-chan time.Time // if a packet is recently sent, this timer fires when SND completes
 	ack2SentEvent  <-chan time.Time // if an ACK2 packet has recently sent, wait SYN before sending another one
-	sndPeriod      time.Duration    // delay between sending packets
+	sndPeriod      atomicDuration   // delay between sending packets
 }
 
 func newUdtSocketSend(s *udtSocket, closed <-chan struct{}, sendEvent <-chan recvPktEvent, messageOut <-chan []byte) *udtSocketSend {
@@ -58,6 +58,10 @@ func (s *udtSocketSend) configureHandshake(p *packet.HandshakePacket) {
 	s.recvAckSeq = p.InitPktSeq
 	s.sendPktSeq = p.InitPktSeq
 	s.farFlowWinSize = uint(p.MaxFlowWinSize)
+}
+
+func (s *udtSocketSend) SetPacketSendPeriod(snd time.Duration) {
+	s.sndPeriod.set(snd)
 }
 
 func (s *udtSocketSend) goSendEvent() {
@@ -83,8 +87,6 @@ func (s *udtSocketSend) goSendEvent() {
 		}
 
 		select {
-		case _, ok := <-closed:
-			return
 		case msg, ok := <-thisMsgChan: // nil if we can't process outgoing messages right now
 			if !ok {
 				return
@@ -108,6 +110,8 @@ func (s *udtSocketSend) goSendEvent() {
 				s.ingestCongestion(sp, evt.now)
 			}
 			s.sendState = s.reevalSendState()
+		case _, ok := <-closed:
+			return
 		case _ = <-s.sndEvent: // SND event
 			s.sndEvent = nil
 			if s.sendState == sendStateSending {
@@ -148,7 +152,7 @@ func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan []byte) {
 			s.msgSeq++
 		}
 
-		mtu := s.mtu
+		mtu := int(s.socket.mtu.get())
 		msgLen := len(s.msgPartialSend)
 		if msgLen >= mtu {
 			// we are full -- send what we can and leave the rest
@@ -260,8 +264,9 @@ func (s *udtSocketSend) sendDataPacket(dp *packet.DataPacket, isResend bool) {
 		return
 	}
 
-	if s.sndPeriod > 0 {
-		s.sndEvent = time.After(s.sndPeriod)
+	snd := s.sndPeriod.get()
+	if snd > 0 {
+		s.sndEvent = time.After(snd)
 		s.sendState = sendStateSending
 	}
 }
@@ -272,11 +277,19 @@ func (s *udtSocketSend) ingestLightAck(p *packet.LightAckPacket, now time.Time) 
 	// Update the largest acknowledged sequence number.
 
 	pktSeqHi := p.PktSeqHi
-	diff := p.recvAckSeq.BlindDiff(pktSeqHi)
+	diff := s.recvAckSeq.BlindDiff(pktSeqHi)
 	if diff > 0 {
 		p.iFlowWindowSize += diff
-		p.recvAckSeq = pktSeqHi
+		s.recvAckSeq = pktSeqHi
 	}
+}
+
+func (s *udtSocketSend) assertValidSentPktID(pktType string, pktSeq packet.PacketID) bool {
+	if s.sendPktSeq.BlindDiff(pktSeq) < 0 {
+		s.socket.senderFault(fmt.Errorf("FAULT: Received an %s for packet %d, but the largest packet we've sent has been %d", pktType, pktSeq.Seq, s.sendPktSeq.Seq))
+		return false
+	}
+	return true
 }
 
 // owned by: goSendEvent
@@ -287,7 +300,7 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	// Send back an ACK2 with the same ACK sequence number in this ACK.
 	if s.ack2SentEvent == nil && p.AckSeqNo == s.sentAck2 {
 		s.sentAck2 = p.AckSeqNo
-		err := s.sendPacket(&packet.Ack2Packet{AckSeqNo: p.AckSeqNo})
+		err := s.socket.sendPacket(&packet.Ack2Packet{AckSeqNo: p.AckSeqNo})
 		if err != nil {
 			log.Printf("Cannot send ACK2: %s", err.Error())
 		} else {
@@ -297,10 +310,9 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 
 	pktSeqHi := p.PktSeqHi
 	if !s.assertValidSentPktID("ACK", pktSeqHi) {
-		//		s.senderFault(fmt.Errorf("FAULT: Received an ACK for packet %d, but the largest packet we've sent has been %d", p.sendPktSeq, pktSeqHi))
 		return
 	}
-	diff := p.recvAckSeq.BlindDiff(pktSeqHi)
+	diff := s.recvAckSeq.BlindDiff(pktSeqHi)
 	if diff <= 0 {
 		return
 	}
@@ -372,31 +384,33 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 	for idx := 0; idx < clen; idx++ {
 		thisEntry := p.CmpLossInfo[idx]
 		if thisEntry&0x80000000 != 0 {
-			thisEntry = thisEntry & 0x7FFFFFFF
+			thisPktID := packet.PacketID{Seq: thisEntry & 0x7FFFFFFF}
 			if idx+1 == clen {
-				s.senderFault(fmt.Errorf("FAULT: While unpacking a NAK, the last entry (%x) was describing a start-of-range", thisEntry))
+				s.socket.senderFault(fmt.Errorf("FAULT: While unpacking a NAK, the last entry (%x) was describing a start-of-range", thisEntry))
 				return
 			}
-			if !s.assertValidSentPktID("NAK", thisEntry) {
+			if !s.assertValidSentPktID("NAK", thisPktID) {
 				return
 			}
 			lastEntry := p.CmpLossInfo[idx+1]
 			if lastEntry&0x80000000 != 0 {
-				s.senderFault(fmt.Errorf("FAULT: While unpacking a NAK, a start-of-range (%x) was followed by another start-of-range (%x)", thisEntry, lastEntry))
+				s.socket.senderFault(fmt.Errorf("FAULT: While unpacking a NAK, a start-of-range (%x) was followed by another start-of-range (%x)", thisEntry, lastEntry))
 				return
 			}
-			if !s.assertValidSentPktID("NAK", lastEntry) {
+			lastPktID := packet.PacketID{Seq: lastEntry}
+			if !s.assertValidSentPktID("NAK", lastPktID) {
 				return
 			}
 			idx++
-			for span := thisEntry; span <= lastEntry; span++ {
+			for span := thisPktID; span != lastPktID; span.Incr() {
 				newLossList = append(newLossList, span)
 			}
 		} else {
-			if !s.assertValidSentPktID("NAK", thisEntry) {
+			thisPktID := packet.PacketID{Seq: thisEntry}
+			if !s.assertValidSentPktID("NAK", thisPktID) {
 				return
 			}
-			newLossList = append(newLossList, thisEntry)
+			newLossList = append(newLossList, thisPktID)
 		}
 	}
 
@@ -421,6 +435,7 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 // ingestCongestion is called to process a (retired?) Congestion packet
 func (s *udtSocketSend) ingestCongestion(p *packet.CongestionPacket, now time.Time) {
 	// One way packet delay is increasing, so decrease the sending rate
-	s.sndPeriod = s.sndPeriod * 1125 / 1000
+	// this is very rough (not atomic, doesn't inform congestion) but this is a deprecated message in any case
+	s.sndPeriod.set(s.sndPeriod.get() * 1125 / 1000)
 	//m_iLastDecSeq = s.sendPktSeq
 }

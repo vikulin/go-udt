@@ -44,9 +44,9 @@ type udtSocket struct {
 	sockID     uint32       // our sockID
 	farSockID  uint32       // the peer's sockID
 
-	sockState      sockState // socket state - used mostly during handshakes
-	mtu            uint      // the negotiated maximum packet size
-	maxFlowWinSize uint      // receiver: maximum unacknowledged packet count
+	sockState      sockState    // socket state - used mostly during handshakes
+	mtu            atomicUint32 // the negotiated maximum packet size
+	maxFlowWinSize uint         // receiver: maximum unacknowledged packet count
 	//rtoPeriod      time.Duration // set by congestion control, standardized on 4 * RTT + RTTVar
 	//	ackPeriod      time.Duration       // receiver: used to (re-)send an ACK. Set by the congestion control module, never greater than 0.01s
 	//	nakPeriod      time.Duration       // receiver: used to (re-)send a NAK. 4 * RTT + RTTVar + 0.01s
@@ -265,7 +265,7 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 		sockState:      sockStateInit,
 		udtVer:         4,
 		isServer:       isServer,
-		mtu:            m.mtu,
+		mtu:            atomicUint32{val: uint32(m.mtu)},
 		maxFlowWinSize: 25600, // todo: turn tunable (minimum 32)
 		isDatagram:     isDatagram,
 		sockID:         sockID,
@@ -298,7 +298,7 @@ func (s *udtSocket) sendHandshake(synCookie uint32, reqType packet.HandshakeReqT
 		UdtVer:         uint32(s.udtVer),
 		SockType:       sockType,
 		InitPktSeq:     s.send.sendPktSeq,
-		MaxPktSize:     uint32(s.mtu),            // maximum packet size (including UDP/IP headers)
+		MaxPktSize:     s.mtu.get(),              // maximum packet size (including UDP/IP headers)
 		MaxFlowWinSize: uint32(s.maxFlowWinSize), // maximum flow window size
 		ReqType:        reqType,
 		SockID:         s.sockID,
@@ -336,8 +336,8 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		s.farSockID = p.SockID
 		s.isDatagram = p.SockType == packet.TypeDGRAM
 
-		if s.mtu > uint(p.MaxPktSize) {
-			s.mtu = uint(p.MaxPktSize)
+		if s.mtu.get() > p.MaxPktSize {
+			s.mtu.set(p.MaxPktSize)
 		}
 		s.recv.configureHandshake(p)
 		s.send.configureHandshake(p)
@@ -364,8 +364,8 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		}
 		s.farSockID = p.SockID
 
-		if s.mtu > uint(p.MaxPktSize) {
-			s.mtu = uint(p.MaxPktSize)
+		if s.mtu.get() > p.MaxPktSize {
+			s.mtu.set(p.MaxPktSize)
 		}
 		s.recv.configureHandshake(p)
 		s.send.configureHandshake(p)
@@ -394,6 +394,11 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 	}
 
 	return false
+}
+
+func (s *udtSocket) senderFault(err error) {
+	log.Printf("Socket shutdown due to protocol error: %s", err.Error())
+	s.sockState = sockStateCorrupted
 }
 
 func absdiff(a uint, b uint) uint {

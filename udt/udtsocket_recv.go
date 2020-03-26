@@ -60,8 +60,6 @@ func (s *udtSocketRecv) goReceiveEvent() {
 	closed := s.closed
 	for {
 		select {
-		case _, ok := <-closed:
-			return
 		case evt, ok := <-recvEvent:
 			if !ok {
 				return
@@ -76,6 +74,8 @@ func (s *udtSocketRecv) goReceiveEvent() {
 			case *packet.ErrPacket:
 				s.ingestError(sp)
 			}
+		case _, ok := <-closed:
+			return
 		case _ = <-s.ackSentEvent:
 			s.ackSentEvent = nil
 		case _ = <-s.ackSentEvent2:
