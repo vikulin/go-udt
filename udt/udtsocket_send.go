@@ -18,6 +18,10 @@ const (
 	sendStateProcessDrop                  // immediately re-process any drop list requests
 )
 
+const (
+	minEXPinterval time.Duration = 300 * time.Millisecond
+)
+
 type udtSocketSend struct {
 	// channels
 	closed     <-chan struct{}     // closed when socket is closed
@@ -25,31 +29,36 @@ type udtSocketSend struct {
 	messageOut <-chan []byte       // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
 	socket     *udtSocket
 
-	sendState      sendState        // current sender state
-	sendPktPend    dataPacketHeap   // list of packets that have been sent but not yet acknoledged
-	sendPktSeq     packet.PacketID  // the current packet sequence number
-	msgPartialSend []byte           // when a message can only partially fit in a socket, this is the remainder
-	msgSeq         uint32           // the current message sequence number
-	farFlowWinSize uint             // the estimated peer available window size
-	expCount       uint             // number of continuous EXP timeouts.
-	expResetCount  time.Time        // the last time expCount was set to 1
-	recvAckSeq     packet.PacketID  // largest packetID we've received an ACK from
-	sentAck2       uint32           // largest ACK2 packet we've sent
-	sendLossList   packetIDHeap     // loss list
-	sndEvent       <-chan time.Time // if a packet is recently sent, this timer fires when SND completes
-	ack2SentEvent  <-chan time.Time // if an ACK2 packet has recently sent, wait SYN before sending another one
-	sndPeriod      atomicDuration   // delay between sending packets
+	sendState      sendState       // current sender state
+	sendPktPend    dataPacketHeap  // list of packets that have been sent but not yet acknoledged
+	sendPktSeq     packet.PacketID // the current packet sequence number
+	msgPartialSend []byte          // when a message can only partially fit in a socket, this is the remainder
+	msgSeq         uint32          // the current message sequence number
+	farFlowWinSize uint            // the estimated peer available window size
+	expCount       uint            // number of continuous EXP timeouts.
+	lastRecvTime   time.Time       // the last time we've heard something from the remote system
+	recvAckSeq     packet.PacketID // largest packetID we've received an ACK from
+	sentAck2       uint32          // largest ACK2 packet we've sent
+	sendLossList   packetIDHeap    // loss list
+	sndPeriod      atomicDuration  // (set by congestion control) delay between sending packets
+	rtoPeriod      atomicDuration  // (set by congestion control) override of EXP timer calculations
+
+	// timers
+	sndEvent      <-chan time.Time // if a packet is recently sent, this timer fires when SND completes
+	ack2SentEvent <-chan time.Time // if an ACK2 packet has recently sent, wait SYN before sending another one
+	expTimerEvent <-chan time.Time // Fires when we haven't heard from the peer in a while
 }
 
 func newUdtSocketSend(s *udtSocket, closed <-chan struct{}, sendEvent <-chan recvPktEvent, messageOut <-chan []byte) *udtSocketSend {
 	ss := &udtSocketSend{
-		socket:        s,
-		expResetCount: s.created,
-		sendPktSeq:    packet.PacketID{randUint32()},
-		closed:        closed,
-		sendEvent:     sendEvent,
-		messageOut:    messageOut,
+		socket:     s,
+		expCount:   1,
+		sendPktSeq: packet.PacketID{randUint32()},
+		closed:     closed,
+		sendEvent:  sendEvent,
+		messageOut: messageOut,
 	}
+	ss.resetEXP(s.created)
 	go ss.goSendEvent()
 	return ss
 }
@@ -98,7 +107,7 @@ func (s *udtSocketSend) goSendEvent() {
 				return
 			}
 			s.expCount = 1
-			s.expResetCount = evt.now
+			s.resetEXP(evt.now)
 			switch sp := evt.pkt.(type) {
 			case *packet.AckPacket:
 				s.ingestAck(sp, evt.now)
@@ -112,6 +121,10 @@ func (s *udtSocketSend) goSendEvent() {
 			s.sendState = s.reevalSendState()
 		case _, ok := <-closed:
 			return
+		case _ = <-s.ack2SentEvent: // ACK2 unlocked
+			s.ack2SentEvent = nil
+		case now := <-s.expTimerEvent: // EXP event
+			s.expEvent(now)
 		case _ = <-s.sndEvent: // SND event
 			s.sndEvent = nil
 			if s.sendState == sendStateSending {
@@ -120,8 +133,6 @@ func (s *udtSocketSend) goSendEvent() {
 					s.processSendExpire()
 				}
 			}
-		case _ = <-s.ack2SentEvent: // ACK2 unlocked
-			s.ack2SentEvent = nil
 		}
 	}
 }
@@ -136,7 +147,6 @@ func (s *udtSocketSend) reevalSendState() sendState {
 	return sendStateIdle
 }
 
-// owned by: goSendEvent
 // try to pack a new data packet and send it
 func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan []byte) {
 	for s.msgPartialSend != nil {
@@ -206,14 +216,13 @@ func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan []byte) {
 	}
 }
 
-// owned by: goSendEvent
 // If the sender's loss list is not empty, retransmit the first packet in the list and remove it from the list.
 func (s *udtSocketSend) processSendLoss() bool {
 	if s.sendLossList == nil || s.sendPktPend == nil {
 		return false
 	}
 
-	minLoss, minLossIdx := s.sendLossList.Min()
+	minLoss, minLossIdx := s.sendLossList.Min(s.recvAckSeq, s.sendPktSeq)
 	if minLossIdx < 0 {
 		// empty loss list? shouldn't really happen as we don't keep empty lists, but check for it anyhow
 		return false
@@ -234,7 +243,6 @@ func (s *udtSocketSend) processSendLoss() bool {
 	return true
 }
 
-// owned by: goSendEvent
 // we have a packed packet and a green light to send, so lets send this and mark it
 func (s *udtSocketSend) sendDataPacket(dp *packet.DataPacket, isResend bool) {
 	if s.sendPktPend == nil {
@@ -271,7 +279,6 @@ func (s *udtSocketSend) sendDataPacket(dp *packet.DataPacket, isResend bool) {
 	}
 }
 
-// owned by: goSendEvent
 // ingestLightAck is called to process a "light" ACK packet
 func (s *udtSocketSend) ingestLightAck(p *packet.LightAckPacket, now time.Time) {
 	// Update the largest acknowledged sequence number.
@@ -279,20 +286,19 @@ func (s *udtSocketSend) ingestLightAck(p *packet.LightAckPacket, now time.Time) 
 	pktSeqHi := p.PktSeqHi
 	diff := s.recvAckSeq.BlindDiff(pktSeqHi)
 	if diff > 0 {
-		p.iFlowWindowSize += diff
+		s.flowWindowSize += diff
 		s.recvAckSeq = pktSeqHi
 	}
 }
 
 func (s *udtSocketSend) assertValidSentPktID(pktType string, pktSeq packet.PacketID) bool {
 	if s.sendPktSeq.BlindDiff(pktSeq) < 0 {
-		s.socket.senderFault(fmt.Errorf("FAULT: Received an %s for packet %d, but the largest packet we've sent has been %d", pktType, pktSeq.Seq, s.sendPktSeq.Seq))
+		s.socket.senderFaultCorrupt(fmt.Errorf("FAULT: Received an %s for packet %d, but the largest packet we've sent has been %d", pktType, pktSeq.Seq, s.sendPktSeq.Seq))
 		return false
 	}
 	return true
 }
 
-// owned by: goSendEvent
 // ingestAck is called to process an ACK packet
 func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	// Update the largest acknowledged sequence number.
@@ -317,29 +323,24 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 		return
 	}
 
-	p.iFlowWindowSize = p.BuffAvail
-	p.recvAckSeq = pktSeqHi
+	oldAckSeq := s.recvAckSeq
+	s.flowWindowSize = p.BuffAvail
+	s.recvAckSeq = pktSeqHi
 
 	// Update RTT and RTTVar.
-	s.socket.applyRTT(p.Rtt)
-
-	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.
-	s.resetAckNakPeriods()
+	s.socket.applyRTT(uint(p.Rtt))
 
 	// Update flow window size.
 	if p.IncludeLink {
 
 		// Update Estimated Bandwidth and packet delivery rate
 		if p.PktRecvRate > 0 {
-			m_iDeliveryRate = (m_iDeliveryRate*7 + p.PktRecvRate) >> 3
+			s.deliveryRate = (s.deliveryRate*7 + p.PktRecvRate) >> 3
 		}
 
 		if p.EstLinkCap > 0 {
-			m_iBandwidth = (m_iBandwidth*7 + p.EstLinkCap) >> 3
+			s.bandwidth = (s.bandwidth*7 + p.EstLinkCap) >> 3
 		}
-
-		m_pCC.setRcvRate(m_iDeliveryRate)
-		m_pCC.setBandwidth(m_iBandwidth)
 	}
 
 	s.socket.cong.onACK(pktSeqHi)
@@ -350,7 +351,7 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	// Update sender's buffer (by releasing the buffer that has been acknowledged).
 	if s.sendPktPend != nil {
 		for {
-			minLoss, minLossIdx := s.sendPktPend.Min()
+			minLoss, minLossIdx := s.sendPktPend.Min(oldAckSeq, s.sendPktSeq)
 			if minLoss.Seq >= pktSeqHi || minLossIdx < 0 {
 				break
 			}
@@ -364,7 +365,7 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	// Update sender's loss list (by removing all those that has been acknowledged).
 	if s.sendLossList != nil {
 		for {
-			minLoss, minLossIdx := s.sendLossList.Min()
+			minLoss, minLossIdx := s.sendLossList.Min(oldAckSeq, s.sendPktSeq)
 			if minLoss >= pktSeqHi || minLossIdx < 0 {
 				break
 			}
@@ -376,7 +377,6 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	}
 }
 
-// owned by: goSendEvent
 // ingestNak is called to process an NAK packet
 func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 	newLossList := make([]packet.PacketID, 0)
@@ -386,7 +386,7 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 		if thisEntry&0x80000000 != 0 {
 			thisPktID := packet.PacketID{Seq: thisEntry & 0x7FFFFFFF}
 			if idx+1 == clen {
-				s.socket.senderFault(fmt.Errorf("FAULT: While unpacking a NAK, the last entry (%x) was describing a start-of-range", thisEntry))
+				s.socket.senderFaultCorrupt(fmt.Errorf("FAULT: While unpacking a NAK, the last entry (%x) was describing a start-of-range", thisEntry))
 				return
 			}
 			if !s.assertValidSentPktID("NAK", thisPktID) {
@@ -394,7 +394,7 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 			}
 			lastEntry := p.CmpLossInfo[idx+1]
 			if lastEntry&0x80000000 != 0 {
-				s.socket.senderFault(fmt.Errorf("FAULT: While unpacking a NAK, a start-of-range (%x) was followed by another start-of-range (%x)", thisEntry, lastEntry))
+				s.socket.senderFaultCorrupt(fmt.Errorf("FAULT: While unpacking a NAK, a start-of-range (%x) was followed by another start-of-range (%x)", thisEntry, lastEntry))
 				return
 			}
 			lastPktID := packet.PacketID{Seq: lastEntry}
@@ -431,11 +431,60 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 	//	3) Reset the EXP time variable.
 }
 
-// owned by: goSendEvent
 // ingestCongestion is called to process a (retired?) Congestion packet
 func (s *udtSocketSend) ingestCongestion(p *packet.CongestionPacket, now time.Time) {
 	// One way packet delay is increasing, so decrease the sending rate
 	// this is very rough (not atomic, doesn't inform congestion) but this is a deprecated message in any case
 	s.sndPeriod.set(s.sndPeriod.get() * 1125 / 1000)
 	//m_iLastDecSeq = s.sendPktSeq
+}
+
+func (s *udtSocketSend) resetEXP(now time.Time) {
+	s.lastRecvTime = now
+
+	var nextExpDurn time.Duration
+	rtoPeriod := s.rtoPeriod.get()
+	if rtoPeriod > 0 {
+		nextExpDurn = rtoPeriod
+	} else {
+		rtt, rttVar := s.socket.getRTT()
+		nextExpDurn = (time.Duration(s.expCount*(rtt+4*rttVar))*time.Microsecond + synTime)
+		minExpTime := time.Duration(s.expCount) * minEXPinterval
+		if nextExpDurn < minExpTime {
+			nextExpDurn = minExpTime
+		}
+	}
+	s.expTimerEvent = time.After(nextExpDurn)
+}
+
+// we've just had the EXP timer expire, see what we can do to recover this
+func (s *udtSocketSend) expEvent(currTime time.Time) {
+
+	// Haven't receive any information from the peer, is it dead?!
+	// timeout: at least 16 expirations and must be greater than 10 seconds
+	if (s.expCount > 16) && (currTime.Sub(s.lastRecvTime) > 5*time.Second) {
+		// Connection is broken.
+		s.socket.senderFaultTimeout()
+		return
+	}
+
+	// sender: Insert all the packets sent after last received acknowledgement into the sender loss list.
+	// recver: Send out a keep-alive packet
+	if m_pSndBuffer.getCurrBufSize() > 0 {
+		if s.sendPktSeq.Add(1) != s.recvAckSeq && s.sendLossList == nil {
+			// resend all unacknowledged packets on timeout, but only if there is no packet in the loss list
+			num := m_pSndLossList.insert(s.recvAckSeq, s.sendPktSeq)
+		}
+		s.cong.onTimeout()
+		s.sendState = sendStateProcessDrop // immediately restart transmission
+	} else {
+		err := s.socket.sendPacket(&packet.KeepAlivePacket{})
+		if err != nil {
+			log.Printf("Cannot send keep-alive: %s", err.Error())
+		}
+	}
+
+	s.expCount++
+	// Reset last response time since we just sent a heart-beat.
+	s.resetEXP(currtime)
 }

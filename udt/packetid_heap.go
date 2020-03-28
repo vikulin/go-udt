@@ -28,3 +28,38 @@ func (h *packetIDHeap) Pop() interface{} {
 	*h = old[0 : n-1]
 	return x
 }
+
+// Min does a binary search of the heap for the entry with the lowest packetID greater than or equal to the specified value
+func (h packetIDHeap) Min(greaterEqual packet.PacketID, lessEqual packet.PacketID) (packet.PacketID, int) {
+	len := len(h)
+	idx := 0
+	wrapped := greaterEqual.Seq > lessEqual.Seq
+	for idx < len {
+		pid := h[idx]
+		var next int
+		if pid.Seq == greaterEqual.Seq {
+			return h[idx], idx
+		} else if pid.Seq >= greaterEqual.Seq {
+			next = idx * 2
+		} else {
+			next = idx*2 + 1
+		}
+		if next >= len && h[idx].Seq > greaterEqual.Seq && (wrapped || h[idx].Seq <= lessEqual.Seq) {
+			return h[idx], idx
+		}
+		idx = next
+	}
+
+	// can't find any packets with greater value, wrap around
+	if wrapped {
+		idx = 0
+		for {
+			next := idx * 2
+			if next >= len && h[idx].Seq <= lessEqual.Seq {
+				return h[idx], idx
+			}
+			idx = next
+		}
+	}
+	return packet.PacketID{0}, -1
+}

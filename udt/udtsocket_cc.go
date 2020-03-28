@@ -213,6 +213,16 @@ func (s *udtSocketCc) GetMSS() uint {
 }
 
 // SetACKPerid sets the time between ACKs sent to the peer
-func (s *udtSocketCc) SetACKPeriod(time.Duration) {
-	// TODO
+func (s *udtSocketCc) SetACKPeriod(ack time.Duration) {
+	s.socket.recv.ackPeriod.set(ack)
+}
+
+// SetACKInterval sets the number of packets sent to the peer before sending an ACK
+func (s *udtSocketCc) SetACKInterval(ack uint) {
+	s.socket.recv.ackInterval.set(uint32(ack))
+}
+
+// SetRTOPeriod overrides the default EXP timeout calculations waiting for data from the peer
+func (s *udtSocketCc) SetRTOPeriod(rto time.Duration) {
+	s.socket.send.rtoPeriod.set(rto)
 }

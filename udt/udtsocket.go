@@ -19,6 +19,7 @@ const (
 	sockStateClosed                      // connection has been closed (by either end)
 	sockStateRefused                     // connection rejected by remote host
 	sockStateCorrupted                   // peer behaved in an improper manner
+	sockStateTimeout                     // connection failed due to peer timeout
 )
 
 type recvPktEvent struct {
@@ -58,7 +59,7 @@ type udtSocket struct {
 	rttVar  uint         // receiver: roundtrip variance. (in microseconds)
 
 	// channels
-	messageIn  <-chan []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
+	messageIn  chan []byte         // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
 	messageOut chan<- []byte       // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
 	recvEvent  chan<- recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
 	sendEvent  chan<- recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
@@ -115,22 +116,29 @@ func (s *udtSocket) fetchReadPacket(blocking bool) []byte {
 	return result
 }
 
-// TODO: int sendmsg(const char* data, int len, int msttl, bool inorder)
-func (s *udtSocket) Read(p []byte) (n int, err error) {
+func (s *udtSocket) connectionError() error {
 	switch s.sockState {
 	case sockStateRefused:
-		err = errors.New("Connection refused by remote host")
-		return
+		return errors.New("Connection refused by remote host")
 	case sockStateCorrupted:
-		err = errors.New("Connection closed due to protocol error")
-		return
+		return errors.New("Connection closed due to protocol error")
+	case sockStateClosed:
+		return errors.New("Connection closed")
+	case sockStateTimeout:
+		return errors.New("Connection timed out")
 	}
+	return nil
+}
+
+// TODO: int sendmsg(const char* data, int len, int msttl, bool inorder)
+func (s *udtSocket) Read(p []byte) (n int, err error) {
+	connErr := s.connectionError()
 	if s.isDatagram {
 		// for datagram sockets, block until we have a message to return and then return it
 		// if the buffer isn't big enough, return a truncated message (discarding the rest) and return an error
-		msg := s.fetchReadPacket(s.sockState != sockStateClosed)
-		if msg == nil && s.sockState == sockStateClosed {
-			err = errors.New("Connection closed")
+		msg := s.fetchReadPacket(connErr == nil)
+		if msg == nil && connErr != nil {
+			err = connErr
 			return
 		}
 		n = copy(p, msg)
@@ -146,13 +154,13 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 		for idx < l {
 			if s.currPartialRead == nil {
 				// Grab the next data packet
-				s.currPartialRead = s.fetchReadPacket(n == 0 && s.sockState != sockStateClosed)
+				s.currPartialRead = s.fetchReadPacket(n == 0 && connErr == nil)
 				if s.currPartialRead == nil {
 					if n != 0 {
 						return
 					}
-					if s.sockState == sockStateClosed {
-						err = errors.New("Connection closed")
+					if connErr != nil {
+						err = connErr
 						return
 					}
 				}
@@ -396,9 +404,16 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 	return false
 }
 
-func (s *udtSocket) senderFault(err error) {
+func (s *udtSocket) senderFaultCorrupt(err error) {
 	log.Printf("Socket shutdown due to protocol error: %s", err.Error())
 	s.sockState = sockStateCorrupted
+	s.messageIn <- nil
+}
+
+func (s *udtSocket) senderFaultTimeout() {
+	log.Printf("Socket shutdown due to peer timeout")
+	s.sockState = sockStateTimeout
+	s.messageIn <- nil
 }
 
 func absdiff(a uint, b uint) uint {
@@ -413,6 +428,9 @@ func (s *udtSocket) applyRTT(rtt uint) {
 	s.rttVar = (s.rttVar*3 + absdiff(s.rtt, rtt)) >> 2
 	s.rtt = (s.rtt*7 + rtt) >> 3
 	s.rttProt.Unlock()
+
+	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.*/
+	s.resetAckNakPeriods()
 }
 
 func (s *udtSocket) getRTT() (rtt, rttVar uint) {
@@ -423,7 +441,6 @@ func (s *udtSocket) getRTT() (rtt, rttVar uint) {
 	return
 }
 
-// owned by: multiplexer read loop
 // called by the multiplexer read loop when a packet is received for this socket.
 // Minimal processing is permitted but try not to stall the caller
 func (s *udtSocket) readPacket(m *multiplexer, p packet.Packet, from *net.UDPAddr) {

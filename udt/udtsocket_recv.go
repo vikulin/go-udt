@@ -11,6 +11,10 @@ import (
 	"github.com/odysseus654/go-udt/udt/packet"
 )
 
+const (
+	ackSelfClockInterval = 64
+)
+
 type udtSocketRecv struct {
 	// channels
 	closed    <-chan struct{}     // closed when socket is closed
@@ -18,19 +22,26 @@ type udtSocketRecv struct {
 	messageIn chan<- []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
 	socket    *udtSocket
 
-	farNextPktSeq   packet.PacketID  // the peer's next largest packet ID expected.
-	farRecdPktSeq   packet.PacketID  // the peer's last "received" packet ID (before any loss events)
-	lastACK         uint32           // last ACK packet we've sent
-	largestACK      uint32           // largest ACK packet we've sent that has been acknowledged (by an ACK2).
-	recvPktPend     dataPacketHeap   // list of packets that are waiting to be processed.
-	recvLossList    receiveLossHeap  // loss list.
-	ackHistory      ackHistoryHeap   // list of sent ACKs.
-	sentAck         packet.PacketID  // largest packetID we've sent an ACK regarding
-	recvAck2        packet.PacketID  // largest packetID we've received an ACK2 from
-	ackSentEvent2   <-chan time.Time // if an ACK packet has recently sent, don't include link information in the next one
-	ackSentEvent    <-chan time.Time // if an ACK packet has recently sent, wait before resending it
-	recvLastArrival time.Time        // time of the most recent data packet arrival
-	recvLastProbe   time.Time        // time of the most recent data packet probe packet
+	farNextPktSeq   packet.PacketID // the peer's next largest packet ID expected.
+	farRecdPktSeq   packet.PacketID // the peer's last "received" packet ID (before any loss events)
+	lastACK         uint32          // last ACK packet we've sent
+	largestACK      uint32          // largest ACK packet we've sent that has been acknowledged (by an ACK2).
+	recvPktPend     dataPacketHeap  // list of packets that are waiting to be processed.
+	recvLossList    receiveLossHeap // loss list.
+	ackHistory      ackHistoryHeap  // list of sent ACKs.
+	sentAck         packet.PacketID // largest packetID we've sent an ACK regarding
+	recvAck2        packet.PacketID // largest packetID we've received an ACK2 from
+	recvLastArrival time.Time       // time of the most recent data packet arrival
+	recvLastProbe   time.Time       // time of the most recent data packet probe packet
+	ackPeriod       atomicDuration  // (set by congestion control) delay between sending ACKs
+	ackInterval     atomicUint32    // (set by congestion control) number of data packets to send before sending an ACK
+	unackPktCount   uint            // number of packets we've received that we haven't sent an ACK for
+	lightAckCount   uint            // number of "light ACK" packets we've sent since the last ACK
+
+	// timers
+	ackSentEvent2 <-chan time.Time // if an ACK packet has recently sent, don't include link information in the next one
+	ackSentEvent  <-chan time.Time // if an ACK packet has recently sent, wait before resending it
+	ackTimerEvent <-chan time.Time // controls when to send an ACK to our peer
 
 	recvPktWindowProt  sync.RWMutex    // lock must be held before referencing recvPktHistory/recvPktPairHistory
 	recvPktHistory     []time.Duration // list of recently received packets.
@@ -39,10 +50,11 @@ type udtSocketRecv struct {
 
 func newUdtSocketRecv(s *udtSocket, closed <-chan struct{}, recvEvent <-chan recvPktEvent, messageIn chan<- []byte) *udtSocketRecv {
 	sr := &udtSocketRecv{
-		socket:    s,
-		closed:    closed,
-		recvEvent: recvEvent,
-		messageIn: messageIn,
+		socket:        s,
+		closed:        closed,
+		recvEvent:     recvEvent,
+		messageIn:     messageIn,
+		ackTimerEvent: time.After(synTime),
 	}
 	go sr.goReceiveEvent()
 	return sr
@@ -80,6 +92,8 @@ func (s *udtSocketRecv) goReceiveEvent() {
 			s.ackSentEvent = nil
 		case _ = <-s.ackSentEvent2:
 			s.ackSentEvent2 = nil
+		case _ = <-s.ackTimerEvent:
+			s.ackEvent()
 		}
 	}
 }
@@ -103,7 +117,6 @@ ACK is used to trigger an acknowledgement (ACK). Its period is set by
    should be used in the implementation.
 */
 
-// owned by: goReceiveEvent
 // ingestAck2 is called to process an ACK2 packet
 func (s *udtSocketRecv) ingestAck2(p *packet.Ack2Packet, now time.Time) {
 	ackSeq := p.AckSeqNo
@@ -127,12 +140,9 @@ func (s *udtSocketRecv) ingestAck2(p *packet.Ack2Packet, now time.Time) {
 
 	s.socket.applyRTT(uint(now.Sub(ackHistEntry.sendTime) / time.Microsecond))
 
-	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.*/
-	s.resetAckNakPeriods()
 	//s.rto = 4 * s.rtt + s.rttVar
 }
 
-// owned by: goReceiveEvent
 // ingestMsgDropReq is called to process an message drop request packet
 func (s *udtSocketRecv) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Time) {
 	stopSeq := p.LastSeq.Add(1)
@@ -173,7 +183,6 @@ func (s *udtSocketRecv) ingestMsgDropReq(p *packet.MsgDropReqPacket, now time.Ti
 	}
 }
 
-// owned by: goReceiveEvent
 // ingestData is called to process a data packet
 func (s *udtSocketRecv) ingestData(p *packet.DataPacket, now time.Time) {
 	s.socket.cong.onPktRecv(*p)
@@ -346,6 +355,18 @@ func (s *udtSocketRecv) attemptProcessPacket(p *packet.DataPacket, isNew bool) b
 				}
 			}
 		}
+	}
+
+	// we've received a data packet, do we need to send an ACK for it?
+	s.unackPktCount++
+	ackInterval := uint(s.ackInterval.get())
+	if (ackInterval > 0) && (ackInterval <= s.unackPktCount) {
+		// ACK timer expired or ACK interval is reached
+		s.ackEvent()
+	} else if ackSelfClockInterval*s.lightAckCount <= s.unackPktCount {
+		//send a "light" ACK
+		s.sendLightACK()
+		s.lightAckCount++
 	}
 
 	if cannotContinue {
@@ -576,8 +597,20 @@ func (s *udtSocketRecv) sendNAK(rl receiveLossHeap) {
 	*/
 }
 
-// owned by: goReceiveEvent
 // ingestData is called to process an (undocumented) OOB error packet
 func (s *udtSocketRecv) ingestError(p *packet.ErrPacket) {
 	// TODO: umm something
+}
+
+// assuming some condition has occured (ACK timer expired, ACK interval), send an ACK and reset the appropriate timer
+func (s *udtSocketRecv) ackEvent() {
+	s.sendACK()
+	ackTime := synTime
+	ackPeriod := s.ackPeriod.get()
+	if ackPeriod > 0 {
+		ackTime = ackPeriod
+	}
+	s.ackTimerEvent = time.After(ackPeriod)
+	s.unackPktCount = 0
+	s.lightAckCount = 1
 }

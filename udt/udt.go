@@ -55,7 +55,7 @@ func dialUDT(ctx context.Context, config *Config, network string, laddr string, 
 }
 
 const (
-	synTime time.Duration = 10000 // in microseconds
+	synTime time.Duration = 10000 * time.Microsecond
 )
 
 var (
