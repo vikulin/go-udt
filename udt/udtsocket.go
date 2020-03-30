@@ -275,6 +275,11 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 	messageIn := make(chan []byte, 256)
 	messageOut := make(chan sendMessage, 256)
 
+	mtu := m.mtu
+	if config.MaxPacketSize > 0 && config.MaxPacketSize < mtu {
+		mtu = config.MaxPacketSize
+	}
+
 	s = &udtSocket{
 		m:              m,
 		Config:         config,
@@ -283,7 +288,7 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 		sockState:      sockStateInit,
 		udtVer:         4,
 		isServer:       isServer,
-		mtu:            atomicUint32{val: uint32(m.mtu)},
+		mtu:            atomicUint32{val: uint32(mtu)},
 		maxFlowWinSize: 25600, // todo: turn tunable (minimum 32)
 		isDatagram:     isDatagram,
 		sockID:         sockID,

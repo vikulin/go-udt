@@ -10,33 +10,32 @@ import (
 
 // Config controls behavior of sockets created with it
 type Config struct {
-	CanAcceptDgram      bool                                                            // can this listener accept datagrams?
-	CanAcceptStream     bool                                                            // can this listener accept streams?
+	CanAcceptDgram     bool          // can this listener accept datagrams?
+	CanAcceptStream    bool          // can this listener accept streams?
+	ListenReplayWindow time.Duration // length of time to wait for repeated incoming connections
+	MaxPacketSize      uint          // Upper limit on maximum packet size (0 = unlimited)
+	MaxBandwidth       uint64        // Maximum bandwidth to take with this connection (in bytes/sec, 0 = unlimited)
+
 	CanAccept           func(hsPacket *packet.HandshakePacket, from *net.UDPAddr) error // can this listener accept this connection?
-	ListenReplayWindow  time.Duration                                                   // length of time to wait for repeated incoming connections
 	CongestionForSocket func(sock *udtSocket) CongestionControl                         // create or otherwise return the CongestionControl for this socket
 
 	// imported from reference implementation
-	MaxPacketSize  uint        // Upper limit on maximum packet size (0 = unlimited)
-	UDT_SNDSYN     bool        // m_bSynSending
-	UDT_RCVSYN     bool        // m_bSynRecving
-	UDT_FC         uint        // m_iFlightFlagSize (max 32)
-	UDT_SNDBUF     uint        // m_iSndBufSize
-	UDT_RCVBUF     uint        // m_iRcvBufSize (min m_iFlightFlagSize packets)
-	UDT_LINGER     interface{} // m_Linger
-	UDP_SNDBUF     uint        // m_iUDPSndBufSize (min m_iMSS)
-	UDP_RCVBUF     uint        // m_iUDPRcvBufSize (min m_iMSS)
-	UDT_RENDEZVOUS bool        // m_bRendezvous
-	UDT_SNDTIMEO   int         // m_iSndTimeOut
-	UDT_RCVTIMEO   int         // m_iRcvTimeOut
-	UDT_REUSEADDR  bool        // m_bReuseAddr
-	UDT_MAXBW      int64       // m_llMaxBW
+	UDT_FC         uint          // m_iFlightFlagSize (max 32)
+	UDT_SNDBUF     uint          // m_iSndBufSize
+	UDT_RCVBUF     uint          // m_iRcvBufSize (min m_iFlightFlagSize packets)
+	UDT_LINGER     time.Duration // m_Linger
+	UDT_RENDEZVOUS bool          // m_bRendezvous
+	UDT_SNDTIMEO   int           // m_iSndTimeOut
+	UDT_RCVTIMEO   int           // m_iRcvTimeOut
 }
 
+// Listen listens for incoming UDT connections addressed to the local address laddr.
+// See function net.ListenUDP for a description of net and laddr.
 func (c *Config) Listen(ctx context.Context, network string, addr string) (net.Listener, error) {
 	return listenUDT(ctx, c, network, addr)
 }
 
+// Dial establishes an outbound UDT connection using the supplied net, laddr and raddr.  See function net.DialUDP for a description of net, laddr and raddr.
 func (c *Config) Dial(ctx context.Context, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
 	return dialUDT(ctx, c, network, laddr, raddr, isStream)
 }

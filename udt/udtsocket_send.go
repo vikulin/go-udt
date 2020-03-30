@@ -73,6 +73,15 @@ func (s *udtSocketSend) configureHandshake(p *packet.HandshakePacket) {
 }
 
 func (s *udtSocketSend) SetPacketSendPeriod(snd time.Duration) {
+	// check to see if we have a bandwidth limit here
+	maxBandwidth := s.socket.Config.MaxBandwidth
+	if maxBandwidth > 0 {
+		minSP := time.Second / time.Duration(float64(maxBandwidth)/float64(s.socket.mtu.get()))
+		if snd < minSP {
+			snd = minSP
+		}
+	}
+
 	s.sndPeriod.set(snd)
 }
 

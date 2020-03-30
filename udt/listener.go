@@ -103,22 +103,6 @@ func resolveAddr(ctx context.Context, network, addr string) (*net.UDPAddr, error
 	return addrs[0], nil
 }
 
-/*
-ListenUDT listens for incoming UDT connections addressed to the local address
-laddr. See function net.ListenUDP for a description of net and laddr.
-*/
-func ListenUDT(network string, addr string) (net.Listener, error) {
-	return listenUDT(context.Background(), DefaultConfig(), network, addr)
-}
-
-/*
-ListenUDTContext listens for incoming UDT connections addressed to the local address
-laddr. See function net.ListenUDP for a description of net and laddr.
-*/
-func ListenUDTContext(ctx context.Context, network string, addr string) (net.Listener, error) {
-	return listenUDT(ctx, DefaultConfig(), network, addr)
-}
-
 func listenUDT(ctx context.Context, config *Config, network string, addr string) (net.Listener, error) {
 	m, err := multiplexerFor(ctx, network, addr)
 	if err != nil {
