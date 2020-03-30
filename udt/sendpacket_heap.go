@@ -2,30 +2,37 @@ package udt
 
 import (
 	"container/heap"
+	"time"
 
 	"github.com/odysseus654/go-udt/udt/packet"
 )
 
-// receiveLossList defines a list of recvLossEntry records sorted by their packet ID
-type dataPacketHeap []*packet.DataPacket
+type sendPacketEntry struct {
+	pkt *packet.DataPacket
+	tim time.Time
+	ttl time.Duration
+}
 
-func (h dataPacketHeap) Len() int {
+// receiveLossList defines a list of recvLossEntry records sorted by their packet ID
+type sendPacketHeap []sendPacketEntry
+
+func (h sendPacketHeap) Len() int {
 	return len(h)
 }
 
-func (h dataPacketHeap) Less(i, j int) bool {
-	return h[i].Seq.Seq < h[j].Seq.Seq
+func (h sendPacketHeap) Less(i, j int) bool {
+	return h[i].pkt.Seq.Seq < h[j].pkt.Seq.Seq
 }
 
-func (h dataPacketHeap) Swap(i, j int) {
+func (h sendPacketHeap) Swap(i, j int) {
 	h[i], h[j] = h[j], h[i]
 }
 
-func (h *dataPacketHeap) Push(x interface{}) { // Push and Pop use pointer receivers because they modify the slice's length, not just its contents.
-	*h = append(*h, x.(*packet.DataPacket))
+func (h *sendPacketHeap) Push(x interface{}) { // Push and Pop use pointer receivers because they modify the slice's length, not just its contents.
+	*h = append(*h, x.(sendPacketEntry))
 }
 
-func (h *dataPacketHeap) Pop() interface{} {
+func (h *sendPacketHeap) Pop() interface{} {
 	old := *h
 	n := len(old)
 	x := old[n-1]
@@ -34,13 +41,13 @@ func (h *dataPacketHeap) Pop() interface{} {
 }
 
 // Find does a binary search of the heap for the specified packetID which is returned
-func (h dataPacketHeap) Find(packetID packet.PacketID) (*packet.DataPacket, int) {
+func (h sendPacketHeap) Find(packetID packet.PacketID) (*sendPacketEntry, int) {
 	len := len(h)
 	idx := 0
 	for idx < len {
-		pid := h[idx].Seq
+		pid := h[idx].pkt.Seq
 		if pid == packetID {
-			return h[idx], idx
+			return &h[idx], idx
 		} else if pid.Seq > packetID.Seq {
 			idx = idx * 2
 		} else {
@@ -51,22 +58,22 @@ func (h dataPacketHeap) Find(packetID packet.PacketID) (*packet.DataPacket, int)
 }
 
 // Min does a binary search of the heap for the entry with the lowest packetID greater than or equal to the specified value
-func (h dataPacketHeap) Min(greaterEqual packet.PacketID, lessEqual packet.PacketID) (*packet.DataPacket, int) {
+func (h sendPacketHeap) Min(greaterEqual packet.PacketID, lessEqual packet.PacketID) (*packet.DataPacket, int) {
 	len := len(h)
 	idx := 0
 	wrapped := greaterEqual.Seq > lessEqual.Seq
 	for idx < len {
-		pid := h[idx].Seq
+		pid := h[idx].pkt.Seq
 		var next int
 		if pid.Seq == greaterEqual.Seq {
-			return h[idx], idx
+			return h[idx].pkt, idx
 		} else if pid.Seq >= greaterEqual.Seq {
 			next = idx * 2
 		} else {
 			next = idx*2 + 1
 		}
-		if next >= len && h[idx].Seq.Seq > greaterEqual.Seq && (wrapped || h[idx].Seq.Seq <= lessEqual.Seq) {
-			return h[idx], idx
+		if next >= len && h[idx].pkt.Seq.Seq > greaterEqual.Seq && (wrapped || h[idx].pkt.Seq.Seq <= lessEqual.Seq) {
+			return h[idx].pkt, idx
 		}
 		idx = next
 	}
@@ -76,8 +83,8 @@ func (h dataPacketHeap) Min(greaterEqual packet.PacketID, lessEqual packet.Packe
 		idx = 0
 		for {
 			next := idx * 2
-			if next >= len && h[idx].Seq.Seq <= lessEqual.Seq {
-				return h[idx], idx
+			if next >= len && h[idx].pkt.Seq.Seq <= lessEqual.Seq {
+				return h[idx].pkt, idx
 			}
 			idx = next
 		}
@@ -86,11 +93,11 @@ func (h dataPacketHeap) Min(greaterEqual packet.PacketID, lessEqual packet.Packe
 }
 
 // Remove does a binary search of the heap for the specified packetID, which is removed
-func (h *dataPacketHeap) Remove(packetID packet.PacketID) bool {
+func (h *sendPacketHeap) Remove(packetID packet.PacketID) bool {
 	len := len(*h)
 	idx := 0
 	for idx < len {
-		pid := (*h)[idx].Seq
+		pid := (*h)[idx].pkt.Seq
 		if pid.Seq == packetID.Seq {
 			heap.Remove(h, idx)
 			return true

@@ -26,15 +26,14 @@ type udtSocketSend struct {
 	// channels
 	closed     <-chan struct{}     // closed when socket is closed
 	sendEvent  <-chan recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
-	messageOut <-chan []byte       // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+	messageOut <-chan sendMessage  // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
 	socket     *udtSocket
 
 	sendState      sendState       // current sender state
-	sendPktPend    dataPacketHeap  // list of packets that have been sent but not yet acknoledged
+	sendPktPend    sendPacketHeap  // list of packets that have been sent but not yet acknoledged
 	sendPktSeq     packet.PacketID // the current packet sequence number
-	msgPartialSend []byte          // when a message can only partially fit in a socket, this is the remainder
+	msgPartialSend *sendMessage    // when a message can only partially fit in a socket, this is the remainder
 	msgSeq         uint32          // the current message sequence number
-	farFlowWinSize uint            // the estimated peer available window size
 	expCount       uint            // number of continuous EXP timeouts.
 	lastRecvTime   time.Time       // the last time we've heard something from the remote system
 	recvAckSeq     packet.PacketID // largest packetID we've received an ACK from
@@ -42,6 +41,8 @@ type udtSocketSend struct {
 	sendLossList   packetIDHeap    // loss list
 	sndPeriod      atomicDuration  // (set by congestion control) delay between sending packets
 	rtoPeriod      atomicDuration  // (set by congestion control) override of EXP timer calculations
+	congestWindow  atomicUint32    // (set by congestion control) size of the current congestion window (in packets)
+	flowWindowSize uint            // negotiated maximum number of unacknowledged packets (in packets)
 
 	// timers
 	sndEvent      <-chan time.Time // if a packet is recently sent, this timer fires when SND completes
@@ -49,14 +50,16 @@ type udtSocketSend struct {
 	expTimerEvent <-chan time.Time // Fires when we haven't heard from the peer in a while
 }
 
-func newUdtSocketSend(s *udtSocket, closed <-chan struct{}, sendEvent <-chan recvPktEvent, messageOut <-chan []byte) *udtSocketSend {
+func newUdtSocketSend(s *udtSocket, closed <-chan struct{}, sendEvent <-chan recvPktEvent, messageOut <-chan sendMessage) *udtSocketSend {
 	ss := &udtSocketSend{
-		socket:     s,
-		expCount:   1,
-		sendPktSeq: packet.PacketID{randUint32()},
-		closed:     closed,
-		sendEvent:  sendEvent,
-		messageOut: messageOut,
+		socket:         s,
+		expCount:       1,
+		sendPktSeq:     packet.PacketID{randUint32()},
+		closed:         closed,
+		sendEvent:      sendEvent,
+		messageOut:     messageOut,
+		congestWindow:  atomicUint32{val: 16},
+		flowWindowSize: s.maxFlowWinSize,
 	}
 	ss.resetEXP(s.created)
 	go ss.goSendEvent()
@@ -66,7 +69,7 @@ func newUdtSocketSend(s *udtSocket, closed <-chan struct{}, sendEvent <-chan rec
 func (s *udtSocketSend) configureHandshake(p *packet.HandshakePacket) {
 	s.recvAckSeq = p.InitPktSeq
 	s.sendPktSeq = p.InitPktSeq
-	s.farFlowWinSize = uint(p.MaxFlowWinSize)
+	s.flowWindowSize = uint(p.MaxFlowWinSize)
 }
 
 func (s *udtSocketSend) SetPacketSendPeriod(snd time.Duration) {
@@ -100,7 +103,7 @@ func (s *udtSocketSend) goSendEvent() {
 			if !ok {
 				return
 			}
-			s.msgPartialSend = msg
+			s.msgPartialSend = &msg
 			s.processDataMsg(true, messageOut)
 		case evt, ok := <-sendEvent:
 			if !ok {
@@ -141,15 +144,24 @@ func (s *udtSocketSend) reevalSendState() sendState {
 	if s.sndEvent != nil {
 		return sendStateSending
 	}
-	if s.farFlowWinSize == 0 {
-		return sendStateWaiting
+	// Do we have too many unacknowledged packets for us to send any more?
+	if s.sendPktPend != nil {
+		congestWindow := uint(s.congestWindow.get())
+		cwnd := s.flowWindowSize
+		if cwnd > congestWindow {
+			cwnd = congestWindow
+		}
+		if cwnd >= uint(len(s.sendPktPend)) {
+			return sendStateWaiting
+		}
 	}
 	return sendStateIdle
 }
 
 // try to pack a new data packet and send it
-func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan []byte) {
+func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan sendMessage) {
 	for s.msgPartialSend != nil {
+		partialSend := s.msgPartialSend
 		state := packet.MbOnly
 		if s.socket.isDatagram {
 			if isFirst {
@@ -163,26 +175,26 @@ func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan []byte) {
 		}
 
 		mtu := int(s.socket.mtu.get())
-		msgLen := len(s.msgPartialSend)
+		msgLen := len(partialSend.content)
 		if msgLen >= mtu {
 			// we are full -- send what we can and leave the rest
 			var dp *packet.DataPacket
 			if msgLen == mtu {
 				dp = &packet.DataPacket{
 					Seq:  s.sendPktSeq,
-					Data: s.msgPartialSend,
+					Data: partialSend.content,
 				}
 				s.msgPartialSend = nil
 			} else {
 				dp = &packet.DataPacket{
 					Seq:  s.sendPktSeq,
-					Data: s.msgPartialSend[0 : mtu-1],
+					Data: partialSend.content[0 : mtu-1],
 				}
-				s.msgPartialSend = s.msgPartialSend[mtu:]
+				s.msgPartialSend = &sendMessage{content: partialSend.content[mtu:], tim: partialSend.tim, ttl: partialSend.ttl}
 			}
 			s.sendPktSeq.Incr()
 			dp.SetMessageData(state, !s.socket.isDatagram, s.msgSeq)
-			s.sendDataPacket(dp, false)
+			s.sendDataPacket(sendPacketEntry{pkt: dp, tim: partialSend.tim, ttl: partialSend.ttl}, false)
 			return
 		}
 
@@ -197,21 +209,26 @@ func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan []byte) {
 			select {
 			case morePartialSend := <-inChan:
 				// we have more data, concat and try again
-				s.msgPartialSend = append(s.msgPartialSend, morePartialSend...)
+				s.msgPartialSend = &sendMessage{
+					content: append(s.msgPartialSend.content, morePartialSend.content...),
+					tim:     s.msgPartialSend.tim,
+					ttl:     s.msgPartialSend.ttl,
+				}
 				continue
 			default:
 				// nothing immediately available, just send what we have
 			}
 		}
 
+		partialSend = s.msgPartialSend
 		dp := &packet.DataPacket{
 			Seq:  s.sendPktSeq,
-			Data: s.msgPartialSend,
+			Data: partialSend.content,
 		}
 		s.msgPartialSend = nil
 		s.sendPktSeq.Incr()
 		dp.SetMessageData(state, !s.socket.isDatagram, s.msgSeq)
-		s.sendDataPacket(dp, false)
+		s.sendDataPacket(sendPacketEntry{pkt: dp, tim: partialSend.tim, ttl: partialSend.ttl}, false)
 		return
 	}
 }
@@ -222,52 +239,109 @@ func (s *udtSocketSend) processSendLoss() bool {
 		return false
 	}
 
-	minLoss, minLossIdx := s.sendLossList.Min(s.recvAckSeq, s.sendPktSeq)
-	if minLossIdx < 0 {
-		// empty loss list? shouldn't really happen as we don't keep empty lists, but check for it anyhow
-		return false
+	var dp *sendPacketEntry
+	for {
+		minLoss, minLossIdx := s.sendLossList.Min(s.recvAckSeq, s.sendPktSeq)
+		if minLossIdx < 0 {
+			// empty loss list? shouldn't really happen as we don't keep empty lists, but check for it anyhow
+			return false
+		}
+
+		heap.Remove(&s.sendLossList, minLossIdx)
+		if len(s.sendLossList) == 0 {
+			s.sendLossList = nil
+		}
+
+		dp, _ = s.sendPktPend.Find(minLoss)
+		if dp == nil {
+			// can't find record of this packet, not much we can do really
+			continue
+		}
+
+		if dp.ttl != 0 && time.Now().Add(dp.ttl).After(dp.tim) {
+			// this packet has expired, ignore
+			continue
+		}
+
+		break
 	}
 
-	heap.Remove(&s.sendLossList, minLossIdx)
-	if len(s.sendLossList) == 0 {
-		s.sendLossList = nil
-	}
-
-	dp, dpIdx := s.sendPktPend.Find(minLoss)
-	if dp == nil {
-		// can't find record of this packet, not much we can do really
-		return false
-	}
-
-	s.sendDataPacket(dp, true)
+	s.sendDataPacket(*dp, true)
 	return true
 }
 
-// we have a packed packet and a green light to send, so lets send this and mark it
-func (s *udtSocketSend) sendDataPacket(dp *packet.DataPacket, isResend bool) {
+// evaluate our pending packet list to see if we have any expired messages
+func (s *udtSocketSend) processSendExpire() bool {
 	if s.sendPktPend == nil {
-		s.sendPktPend = dataPacketHeap{dp}
+		return false
+	}
+
+	pktPend := make([]sendPacketEntry, len(s.sendPktPend))
+	copy(pktPend, s.sendPktPend)
+	for _, p := range pktPend {
+		if p.ttl != 0 && time.Now().Add(p.ttl).After(p.tim) {
+			// this message has expired, drop it
+			_, _, msgNo := p.pkt.GetMessageData()
+			dropMsg := &packet.MsgDropReqPacket{
+				MsgID:    msgNo,
+				FirstSeq: p.pkt.Seq,
+				LastSeq:  p.pkt.Seq,
+			}
+
+			// find the other packets in this message
+			for _, op := range pktPend {
+				_, _, otherMsgNo := op.pkt.GetMessageData()
+				if otherMsgNo == msgNo {
+					if dropMsg.FirstSeq.BlindDiff(p.pkt.Seq) > 0 {
+						dropMsg.FirstSeq = p.pkt.Seq
+					}
+					if dropMsg.LastSeq.BlindDiff(p.pkt.Seq) < 0 {
+						dropMsg.LastSeq = p.pkt.Seq
+					}
+				}
+				if s.sendLossList != nil {
+					if _, slIdx := s.sendLossList.Find(p.pkt.Seq); slIdx >= 0 {
+						heap.Remove(&s.sendLossList, slIdx)
+					}
+				}
+			}
+			if s.sendLossList != nil && len(s.sendLossList) == 0 {
+				s.sendLossList = nil
+			}
+
+			err := s.socket.sendPacket(dropMsg)
+			if err != nil {
+				log.Printf("Error sending message-drop packet: %s", err.Error())
+			}
+
+			return true
+		}
+	}
+	return false
+}
+
+// we have a packed packet and a green light to send, so lets send this and mark it
+func (s *udtSocketSend) sendDataPacket(dp sendPacketEntry, isResend bool) {
+	if s.sendPktPend == nil {
+		s.sendPktPend = sendPacketHeap{dp}
 		heap.Init(&s.sendPktPend)
 	} else {
 		heap.Push(&s.sendPktPend, dp)
 	}
 
-	s.socket.cong.onDataPktSent(dp.Seq)
-	err := s.socket.sendPacket(dp)
+	s.socket.cong.onDataPktSent(dp.pkt.Seq)
+	err := s.socket.sendPacket(dp.pkt)
 	if err != nil {
 		log.Printf("Error sending data packet: %s", err.Error())
 	}
 
 	// have we exceeded our recipient's window size?
-	if s.farFlowWinSize > 0 {
-		s.farFlowWinSize--
-	}
-	if s.farFlowWinSize == 0 {
-		s.sendState = sendStateWaiting
+	s.sendState = s.reevalSendState()
+	if s.sendState == sendStateWaiting {
 		return
 	}
 
-	if !isResend && dp.Seq.Seq%16 == 0 {
+	if !isResend && dp.pkt.Seq.Seq%16 == 0 {
 		s.processSendExpire()
 		return
 	}
@@ -284,9 +358,9 @@ func (s *udtSocketSend) ingestLightAck(p *packet.LightAckPacket, now time.Time) 
 	// Update the largest acknowledged sequence number.
 
 	pktSeqHi := p.PktSeqHi
-	diff := s.recvAckSeq.BlindDiff(pktSeqHi)
+	diff := pktSeqHi.BlindDiff(s.recvAckSeq)
 	if diff > 0 {
-		s.flowWindowSize += diff
+		s.flowWindowSize += uint(diff)
 		s.recvAckSeq = pktSeqHi
 	}
 }
@@ -318,13 +392,13 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	if !s.assertValidSentPktID("ACK", pktSeqHi) {
 		return
 	}
-	diff := s.recvAckSeq.BlindDiff(pktSeqHi)
+	diff := pktSeqHi.BlindDiff(s.recvAckSeq)
 	if diff <= 0 {
 		return
 	}
 
 	oldAckSeq := s.recvAckSeq
-	s.flowWindowSize = p.BuffAvail
+	s.flowWindowSize = uint(p.BuffAvail)
 	s.recvAckSeq = pktSeqHi
 
 	// Update RTT and RTTVar.
@@ -352,7 +426,7 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	if s.sendPktPend != nil {
 		for {
 			minLoss, minLossIdx := s.sendPktPend.Min(oldAckSeq, s.sendPktSeq)
-			if minLoss.Seq >= pktSeqHi || minLossIdx < 0 {
+			if pktSeqHi.BlindDiff(minLoss.Seq) >= 0 || minLossIdx < 0 {
 				break
 			}
 			heap.Remove(&s.sendPktPend, minLossIdx)
@@ -366,7 +440,7 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	if s.sendLossList != nil {
 		for {
 			minLoss, minLossIdx := s.sendLossList.Min(oldAckSeq, s.sendPktSeq)
-			if minLoss >= pktSeqHi || minLossIdx < 0 {
+			if pktSeqHi.BlindDiff(minLoss) >= 0 || minLossIdx < 0 {
 				break
 			}
 			heap.Remove(&s.sendLossList, minLossIdx)
@@ -426,9 +500,7 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 		}
 	}
 
-	//	2) Update the SND period by rate control (see section 3.6).
-
-	//	3) Reset the EXP time variable.
+	s.sendState = sendStateProcessDrop // immediately restart transmission
 }
 
 // ingestCongestion is called to process a (retired?) Congestion packet
@@ -470,12 +542,17 @@ func (s *udtSocketSend) expEvent(currTime time.Time) {
 
 	// sender: Insert all the packets sent after last received acknowledgement into the sender loss list.
 	// recver: Send out a keep-alive packet
-	if m_pSndBuffer.getCurrBufSize() > 0 {
-		if s.sendPktSeq.Add(1) != s.recvAckSeq && s.sendLossList == nil {
+	if s.sendPktPend != nil {
+		if s.sendPktPend != nil && s.sendLossList == nil {
 			// resend all unacknowledged packets on timeout, but only if there is no packet in the loss list
-			num := m_pSndLossList.insert(s.recvAckSeq, s.sendPktSeq)
+			newLossList := make([]packet.PacketID, 0)
+			for span := s.recvAckSeq.Add(1); span != s.sendPktSeq.Add(1); span.Incr() {
+				newLossList = append(newLossList, span)
+			}
+			s.sendLossList = newLossList
+			heap.Init(&s.sendLossList)
 		}
-		s.cong.onTimeout()
+		s.socket.cong.onTimeout()
 		s.sendState = sendStateProcessDrop // immediately restart transmission
 	} else {
 		err := s.socket.sendPacket(&packet.KeepAlivePacket{})
@@ -486,5 +563,5 @@ func (s *udtSocketSend) expEvent(currTime time.Time) {
 
 	s.expCount++
 	// Reset last response time since we just sent a heart-beat.
-	s.resetEXP(currtime)
+	s.resetEXP(currTime)
 }

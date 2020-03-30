@@ -27,6 +27,12 @@ type recvPktEvent struct {
 	now time.Time
 }
 
+type sendMessage struct {
+	content []byte
+	tim     time.Time     // time message is submitted
+	ttl     time.Duration // message dropped if it can't be sent in this timeframe
+}
+
 /*
 udtSocket encapsulates a UDT socket between a local and remote address pair, as
 defined by the UDT specification.  udtSocket implements the net.Conn interface
@@ -60,7 +66,7 @@ type udtSocket struct {
 
 	// channels
 	messageIn  chan []byte         // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
-	messageOut chan<- []byte       // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+	messageOut chan<- sendMessage  // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
 	recvEvent  chan<- recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
 	sendEvent  chan<- recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
 	closed     chan<- struct{}     // closed when socket is closed
@@ -197,7 +203,7 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 	}
 
 	n = len(p)
-	s.messageOut <- p
+	s.messageOut <- sendMessage{content: p, tim: time.Now()}
 	return
 }
 
@@ -263,7 +269,7 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 	recvEvent := make(chan recvPktEvent, 256)
 	sendEvent := make(chan recvPktEvent, 256)
 	messageIn := make(chan []byte, 256)
-	messageOut := make(chan []byte, 256)
+	messageOut := make(chan sendMessage, 256)
 
 	s = &udtSocket{
 		m:              m,
@@ -428,9 +434,6 @@ func (s *udtSocket) applyRTT(rtt uint) {
 	s.rttVar = (s.rttVar*3 + absdiff(s.rtt, rtt)) >> 2
 	s.rtt = (s.rtt*7 + rtt) >> 3
 	s.rttProt.Unlock()
-
-	// Update both ACK and NAK period to 4 * RTT + RTTVar + SYN.*/
-	s.resetAckNakPeriods()
 }
 
 func (s *udtSocket) getRTT() (rtt, rttVar uint) {

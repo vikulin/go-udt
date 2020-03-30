@@ -537,7 +537,7 @@ func (s *udtSocketRecv) sendACK() {
 		PktSeqHi:  ack,
 		Rtt:       uint32(rtt),
 		RttVar:    uint32(rttVar),
-		BuffAvail: math.Max(2, m_pRcvBuffer.getAvailBufSize()),
+		BuffAvail: math.Max(2, s.rcvBuffer.getAvailBufSize()),
 	}
 	if s.ackSentEvent2 == nil {
 		recvSpeed, bandwidth := s.getRcvSpeeds()
@@ -586,15 +586,6 @@ func (s *udtSocketRecv) sendNAK(rl receiveLossHeap) {
 	if err != nil {
 		log.Printf("Cannot send NAK: %s", err.Error())
 	}
-	/*
-			      // update next NAK time, which should wait enough time for the retansmission, but not too long
-		      m_ullNAKInt = (m_iRTT + 4 * m_iRTTVar) * m_ullCPUFrequency;
-		      rcv_speed, _ := s.getPktRcvSpeeds();
-		      if (rcv_speed > 0)
-		         m_ullNAKInt += (m_pRcvLossList->getLossLength() * 1000000ULL / rcv_speed) * m_ullCPUFrequency;
-		      if (m_ullNAKInt < m_ullMinNakInt)
-		         m_ullNAKInt = m_ullMinNakInt;
-	*/
 }
 
 // ingestData is called to process an (undocumented) OOB error packet

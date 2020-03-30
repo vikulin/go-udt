@@ -63,3 +63,30 @@ func (h packetIDHeap) Min(greaterEqual packet.PacketID, lessEqual packet.PacketI
 	}
 	return packet.PacketID{0}, -1
 }
+
+func (h packetIDHeap) compare(pktID packet.PacketID, idx int) int {
+	if pktID.Seq < h[idx].Seq {
+		return -1
+	}
+	if pktID.Seq > h[idx].Seq {
+		return +1
+	}
+	return 0
+}
+
+// Find does a binary search of the heap for the specified packetID which is returned
+func (h packetIDHeap) Find(pktID packet.PacketID) (*packet.PacketID, int) {
+	len := len(h)
+	idx := 0
+	for idx < len {
+		cmp := h.compare(pktID, idx)
+		if cmp == 0 {
+			return &h[idx], idx
+		} else if cmp > 0 {
+			idx = idx * 2
+		} else {
+			idx = idx*2 + 1
+		}
+	}
+	return nil, -1
+}

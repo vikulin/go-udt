@@ -171,7 +171,7 @@ func (s *udtSocketCc) GetSndCurrSeqNo() packet.PacketID {
 // SetCongestionWindowSize sets the size of the congestion window (in packets)
 func (s *udtSocketCc) SetCongestionWindowSize(pkt uint) {
 	s.congWindow = pkt
-	s.socket.send.SetCongestionWindowSize(pkt)
+	s.socket.send.congestWindow.set(uint32(pkt))
 }
 
 // GetCongestionWindowSize gets the size of the congestion window (in packets)
@@ -192,8 +192,7 @@ func (s *udtSocketCc) SetPacketSendPeriod(snd time.Duration) {
 
 // GetMaxFlowWindow is the largest number of unacknowledged packets we can receive (in packets)
 func (s *udtSocketCc) GetMaxFlowWindow() uint {
-	// TODO
-	return 0
+	return s.socket.maxFlowWinSize
 }
 
 // GetReceiveRates is the current calculated receive rate and bandwidth (in packets/sec)
