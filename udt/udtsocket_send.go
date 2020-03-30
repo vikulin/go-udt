@@ -122,7 +122,7 @@ func (s *udtSocketSend) goSendEvent() {
 				s.ingestCongestion(sp, evt.now)
 			}
 			s.sendState = s.reevalSendState()
-		case _, ok := <-closed:
+		case _, _ = <-closed:
 			return
 		case _ = <-s.ack2SentEvent: // ACK2 unlocked
 			s.ack2SentEvent = nil
@@ -406,15 +406,7 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 
 	// Update flow window size.
 	if p.IncludeLink {
-
-		// Update Estimated Bandwidth and packet delivery rate
-		if p.PktRecvRate > 0 {
-			s.deliveryRate = (s.deliveryRate*7 + p.PktRecvRate) >> 3
-		}
-
-		if p.EstLinkCap > 0 {
-			s.bandwidth = (s.bandwidth*7 + p.EstLinkCap) >> 3
-		}
+		s.socket.applyReceiveRates(uint(p.PktRecvRate), uint(p.EstLinkCap))
 	}
 
 	s.socket.cong.onACK(pktSeqHi)

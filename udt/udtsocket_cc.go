@@ -196,8 +196,8 @@ func (s *udtSocketCc) GetMaxFlowWindow() uint {
 }
 
 // GetReceiveRates is the current calculated receive rate and bandwidth (in packets/sec)
-func (s *udtSocketCc) GetReceiveRates() (int, int) {
-	return s.socket.recv.getRcvSpeeds()
+func (s *udtSocketCc) GetReceiveRates() (uint, uint) {
+	return s.socket.getRcvSpeeds()
 }
 
 // GetRTT is the current calculated roundtrip time between peers

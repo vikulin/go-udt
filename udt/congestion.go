@@ -27,7 +27,7 @@ type CongestionControlParms interface {
 	GetMaxFlowWindow() uint
 
 	// GetReceiveRates is the current calculated receive rate and bandwidth (in packets/sec)
-	GetReceiveRates() (recvSpeed, bandwidth int)
+	GetReceiveRates() (recvSpeed, bandwidth uint)
 
 	// GetRTT is the current calculated roundtrip time between peers
 	GetRTT() time.Duration

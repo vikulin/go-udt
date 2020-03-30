@@ -4,7 +4,6 @@ import (
 	"container/heap"
 	"log"
 	"math"
-	"sync"
 	"time"
 
 	"github.com/furstenheim/nth_element/FloydRivest"
@@ -22,30 +21,28 @@ type udtSocketRecv struct {
 	messageIn chan<- []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
 	socket    *udtSocket
 
-	farNextPktSeq   packet.PacketID // the peer's next largest packet ID expected.
-	farRecdPktSeq   packet.PacketID // the peer's last "received" packet ID (before any loss events)
-	lastACK         uint32          // last ACK packet we've sent
-	largestACK      uint32          // largest ACK packet we've sent that has been acknowledged (by an ACK2).
-	recvPktPend     dataPacketHeap  // list of packets that are waiting to be processed.
-	recvLossList    receiveLossHeap // loss list.
-	ackHistory      ackHistoryHeap  // list of sent ACKs.
-	sentAck         packet.PacketID // largest packetID we've sent an ACK regarding
-	recvAck2        packet.PacketID // largest packetID we've received an ACK2 from
-	recvLastArrival time.Time       // time of the most recent data packet arrival
-	recvLastProbe   time.Time       // time of the most recent data packet probe packet
-	ackPeriod       atomicDuration  // (set by congestion control) delay between sending ACKs
-	ackInterval     atomicUint32    // (set by congestion control) number of data packets to send before sending an ACK
-	unackPktCount   uint            // number of packets we've received that we haven't sent an ACK for
-	lightAckCount   uint            // number of "light ACK" packets we've sent since the last ACK
+	farNextPktSeq      packet.PacketID // the peer's next largest packet ID expected.
+	farRecdPktSeq      packet.PacketID // the peer's last "received" packet ID (before any loss events)
+	lastACK            uint32          // last ACK packet we've sent
+	largestACK         uint32          // largest ACK packet we've sent that has been acknowledged (by an ACK2).
+	recvPktPend        dataPacketHeap  // list of packets that are waiting to be processed.
+	recvLossList       receiveLossHeap // loss list.
+	ackHistory         ackHistoryHeap  // list of sent ACKs.
+	sentAck            packet.PacketID // largest packetID we've sent an ACK regarding
+	recvAck2           packet.PacketID // largest packetID we've received an ACK2 from
+	recvLastArrival    time.Time       // time of the most recent data packet arrival
+	recvLastProbe      time.Time       // time of the most recent data packet probe packet
+	ackPeriod          atomicDuration  // (set by congestion control) delay between sending ACKs
+	ackInterval        atomicUint32    // (set by congestion control) number of data packets to send before sending an ACK
+	unackPktCount      uint            // number of packets we've received that we haven't sent an ACK for
+	lightAckCount      uint            // number of "light ACK" packets we've sent since the last ACK
+	recvPktHistory     []time.Duration // list of recently received packets.
+	recvPktPairHistory []time.Duration // probing packet window.
 
 	// timers
 	ackSentEvent2 <-chan time.Time // if an ACK packet has recently sent, don't include link information in the next one
 	ackSentEvent  <-chan time.Time // if an ACK packet has recently sent, wait before resending it
 	ackTimerEvent <-chan time.Time // controls when to send an ACK to our peer
-
-	recvPktWindowProt  sync.RWMutex    // lock must be held before referencing recvPktHistory/recvPktPairHistory
-	recvPktHistory     []time.Duration // list of recently received packets.
-	recvPktPairHistory []time.Duration // probing packet window.
 }
 
 func newUdtSocketRecv(s *udtSocket, closed <-chan struct{}, recvEvent <-chan recvPktEvent, messageIn chan<- []byte) *udtSocketRecv {
@@ -192,7 +189,6 @@ func (s *udtSocketRecv) ingestData(p *packet.DataPacket, now time.Time) {
 	/* If the sequence number of the current data packet is 16n + 1,
 	where n is an integer, record the time interval between this
 	packet and the last data packet in the Packet Pair Window. */
-	s.recvPktWindowProt.Lock()
 	if (seq.Seq-1)&0xf == 0 {
 		if !s.recvLastProbe.IsZero() {
 			if s.recvPktPairHistory == nil {
@@ -219,7 +215,6 @@ func (s *udtSocketRecv) ingestData(p *packet.DataPacket, now time.Time) {
 		}
 	}
 	s.recvLastArrival = now
-	s.recvPktWindowProt.Unlock()
 
 	/* If the sequence number of the current data packet is greater
 	than LRSN + 1, put all the sequence numbers between (but
@@ -422,23 +417,11 @@ func (s *udtSocketRecv) sendLightACK() {
 }
 
 func (s *udtSocketRecv) getRcvSpeeds() (recvSpeed, bandwidth int) {
-	var ourPktHistory sortableDurnArray
-	var ourProbeHistory sortableDurnArray
-
-	s.recvPktWindowProt.RLock()
-	if s.recvPktHistory != nil {
-		ourPktHistory = make(sortableDurnArray, len(s.recvPktHistory))
-		copy(ourPktHistory, s.recvPktHistory)
-	}
-
-	if s.recvPktPairHistory != nil {
-		ourProbeHistory = make(sortableDurnArray, len(s.recvPktPairHistory))
-		copy(ourProbeHistory, s.recvPktPairHistory)
-	}
-	s.recvPktWindowProt.RUnlock()
 
 	// get median value, but cannot change the original value order in the window
-	if ourPktHistory != nil {
+	if s.recvPktHistory != nil {
+		ourPktHistory := make(sortableDurnArray, len(s.recvPktHistory))
+		copy(ourPktHistory, s.recvPktHistory)
 		n := len(ourPktHistory)
 
 		cutPos := n / 2
@@ -468,7 +451,9 @@ func (s *udtSocketRecv) getRcvSpeeds() (recvSpeed, bandwidth int) {
 	}
 
 	// get median value, but cannot change the original value order in the window
-	if ourProbeHistory == nil {
+	if s.recvPktPairHistory == nil {
+		ourProbeHistory := make(sortableDurnArray, len(s.recvPktPairHistory))
+		copy(ourProbeHistory, s.recvPktPairHistory)
 		n := len(ourProbeHistory)
 
 		cutPos := n / 2
@@ -601,7 +586,7 @@ func (s *udtSocketRecv) ackEvent() {
 	if ackPeriod > 0 {
 		ackTime = ackPeriod
 	}
-	s.ackTimerEvent = time.After(ackPeriod)
+	s.ackTimerEvent = time.After(ackTime)
 	s.unackPktCount = 0
 	s.lightAckCount = 1
 }

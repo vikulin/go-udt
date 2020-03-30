@@ -64,6 +64,10 @@ type udtSocket struct {
 	rtt     uint         // receiver: estimated roundtrip time. (in microseconds)
 	rttVar  uint         // receiver: roundtrip variance. (in microseconds)
 
+	receiveRateProt sync.RWMutex // lock must be held before referencing deliveryRate/bandwidth
+	deliveryRate    uint         // delivery rate reported from peer (packets/sec)
+	bandwidth       uint         // bandwidth reported from peer (packets/sec)
+
 	// channels
 	messageIn  chan []byte         // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
 	messageOut chan<- sendMessage  // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
@@ -288,6 +292,8 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 		recvEvent:      recvEvent,
 		sendEvent:      sendEvent,
 		closed:         closed,
+		deliveryRate:   16,
+		bandwidth:      1,
 	}
 	s.send = newUdtSocketSend(s, closed, sendEvent, messageOut)
 	s.recv = newUdtSocketRecv(s, closed, recvEvent, messageIn)
@@ -441,6 +447,26 @@ func (s *udtSocket) getRTT() (rtt, rttVar uint) {
 	rtt = s.rtt
 	rttVar = s.rttVar
 	s.rttProt.RUnlock()
+	return
+}
+
+// Update Estimated Bandwidth and packet delivery rate
+func (s *udtSocket) applyReceiveRates(deliveryRate uint, bandwidth uint) {
+	s.receiveRateProt.Lock()
+	if deliveryRate > 0 {
+		s.deliveryRate = (s.deliveryRate*7 + deliveryRate) >> 3
+	}
+	if bandwidth > 0 {
+		s.bandwidth = (s.bandwidth*7 + bandwidth) >> 3
+	}
+	s.receiveRateProt.Unlock()
+}
+
+func (s *udtSocket) getRcvSpeeds() (deliveryRate uint, bandwidth uint) {
+	s.receiveRateProt.RLock()
+	deliveryRate = s.deliveryRate
+	bandwidth = s.bandwidth
+	s.receiveRateProt.RUnlock()
 	return
 }
 
