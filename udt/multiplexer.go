@@ -28,7 +28,7 @@ type multiplexer struct {
 	laddr         *net.UDPAddr   // the local address handled by this multiplexer
 	conn          net.PacketConn // the UDPConn from which we read/write
 	sockets       sync.Map       // the udtSockets handled by this multiplexer, by sockId
-	rvSockets     []*udtSocket   // the list of any sockets currently in rendezvous mode
+	rvSockets     sync.Map       // the list of any sockets currently in rendezvous mode
 	listenSock    *listener      // the server socket listening to incoming connections, if there is one
 	servSockMutex sync.Mutex
 	mtu           uint               // the Maximum Transmission Unit of packets sent from this address
@@ -230,23 +230,39 @@ func (m *multiplexer) isLive() bool {
 		return false
 	}
 	m.servSockMutex.Lock()
-	defer m.servSockMutex.Unlock()
-
 	if m.listenSock != nil {
+		m.servSockMutex.Unlock()
 		return true
 	}
-	if m.rvSockets != nil {
-		if len(m.rvSockets) > 0 {
-			return true
-		}
-	}
+	m.servSockMutex.Unlock()
 
 	isEmpty := true
+	m.rvSockets.Range(func(key, val interface{}) bool {
+		isEmpty = false
+		return false
+	})
+	if !isEmpty {
+		return true
+	}
+
 	m.sockets.Range(func(key, val interface{}) bool {
 		isEmpty = false
 		return false
 	})
 	return !isEmpty
+}
+
+func (m *multiplexer) startRendezvous(s *udtSocket) {
+	peer := s.raddr.String()
+	m.rvSockets.Store(peer, s)
+}
+
+func (m *multiplexer) endRendezvous(s *udtSocket) {
+	peer := s.raddr.String()
+	sock, ok := m.rvSockets.Load(peer)
+	if ok && sock.(*udtSocket) == s {
+		m.rvSockets.Delete(peer)
+	}
 }
 
 /*
@@ -278,24 +294,22 @@ func (m *multiplexer) goRead() {
 				continue
 			}
 
-			m.servSockMutex.Lock()
-			if m.rvSockets != nil {
-				foundMatch := false
-				for _, sock := range m.rvSockets {
-					if sock.readHandshake(m, hsPacket, from.(*net.UDPAddr)) {
-						foundMatch = true
-						break
-					}
+			foundMatch := false
+			m.rvSockets.Range(func(key, val interface{}) bool {
+				if val.(*udtSocket).readHandshake(m, hsPacket, from.(*net.UDPAddr)) {
+					foundMatch = true
+					return false
 				}
-				if foundMatch {
-					m.servSockMutex.Unlock()
-					continue
-				}
+				return true
+			})
+			if foundMatch {
+				continue
 			}
+			m.servSockMutex.Lock()
 			if m.listenSock != nil {
 				m.listenSock.readHandshake(m, hsPacket, from.(*net.UDPAddr))
-				m.servSockMutex.Unlock()
 			}
+			m.servSockMutex.Unlock()
 		}
 		if ifDestSock, ok := m.sockets.Load(sockID); ok {
 			ifDestSock.(*udtSocket).readPacket(m, p, from.(*net.UDPAddr))

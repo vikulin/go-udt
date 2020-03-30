@@ -85,11 +85,11 @@ func (s *udtSocketRecv) goReceiveEvent() {
 			}
 		case _, ok := <-closed:
 			return
-		case _ = <-s.ackSentEvent:
+		case <-s.ackSentEvent:
 			s.ackSentEvent = nil
-		case _ = <-s.ackSentEvent2:
+		case <-s.ackSentEvent2:
 			s.ackSentEvent2 = nil
-		case _ = <-s.ackTimerEvent:
+		case <-s.ackTimerEvent:
 			s.ackEvent()
 		}
 	}

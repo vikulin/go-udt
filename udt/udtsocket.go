@@ -14,6 +14,7 @@ type sockState int
 
 const (
 	sockStateInit       sockState = iota // object is being constructed
+	sockStateRendezvous                  // attempting to create a rendezvous connection
 	sockStateConnecting                  // attempting to create a connection
 	sockStateConnected                   // connection is established
 	sockStateClosed                      // connection has been closed (by either end)
@@ -73,7 +74,11 @@ type udtSocket struct {
 	messageOut chan<- sendMessage  // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
 	recvEvent  chan<- recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
 	sendEvent  chan<- recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
-	closed     chan<- struct{}     // closed when socket is closed
+	closed     chan struct{}       // closed when socket is closed
+
+	// timers
+	connTimeout <-chan time.Time // connecting: fires when connection attempt times out
+	connRetry   <-chan time.Time // connecting: fires when connection attempt to be retried
 
 	send *udtSocketSend // reference to sending side of this socket
 	recv *udtSocketRecv // reference to receiving side of this socket
@@ -310,7 +315,46 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 func (s *udtSocket) startConnect() error {
 	s.cong.init(s.send.sendPktSeq)
 	s.sockState = sockStateConnecting
+
+	s.connTimeout = time.After(3 * time.Second)
+	s.connRetry = time.After(250 * time.Millisecond)
+	go s.goManageConnection()
+
 	return s.sendHandshake(0, packet.HsRequest)
+}
+
+func (s *udtSocket) startRendezvous() error {
+	s.cong.init(s.send.sendPktSeq)
+	s.sockState = sockStateRendezvous
+
+	s.connTimeout = time.After(30 * time.Second)
+	s.connRetry = time.After(250 * time.Millisecond)
+	go s.goManageConnection()
+
+	s.m.startRendezvous(s)
+	return s.sendHandshake(0, packet.HsRendezvous)
+}
+
+func (s *udtSocket) goManageConnection() {
+	closed := s.closed
+	for {
+		select {
+		case <-closed:
+			return
+		case <-s.connTimeout: // connection timed out
+			s.senderFaultTimeout()
+		case <-s.connRetry: // resend connection attempt
+			s.connRetry = nil
+			switch s.sockState {
+			case sockStateConnecting:
+				s.sendHandshake(0, packet.HsRequest)
+				s.connRetry = time.After(250 * time.Millisecond)
+			case sockStateRendezvous:
+				s.sendHandshake(0, packet.HsRendezvous)
+				s.connRetry = time.After(250 * time.Millisecond)
+			}
+		}
+	}
 }
 
 func (s *udtSocket) sendHandshake(synCookie uint32, reqType packet.HandshakeReqType) error {
@@ -365,8 +409,10 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 			s.mtu.set(p.MaxPktSize)
 		}
 		s.recv.configureHandshake(p)
-		s.send.configureHandshake(p)
+		s.send.configureHandshake(p, true)
 		s.sockState = sockStateConnected
+		s.connTimeout = nil
+		s.connRetry = nil
 
 		err := s.sendHandshake(p.SynCookie, packet.HsResponse)
 		if err != nil {
@@ -380,10 +426,10 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 			s.sockState = sockStateRefused
 			return true
 		}
-		if p.ReqType != packet.HsResponse {
-			return true // not a response packet, ignore
+		if p.ReqType != packet.HsRequest {
+			return true // not a request packet, ignore
 		}
-		if p.InitPktSeq != s.send.sendPktSeq {
+		if !s.checkValidHandshake(m, p, from) || p.InitPktSeq != s.send.sendPktSeq || from != s.raddr || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
 			s.sockState = sockStateCorrupted
 			return true
 		}
@@ -393,13 +439,15 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 			s.mtu.set(p.MaxPktSize)
 		}
 		s.recv.configureHandshake(p)
-		s.send.configureHandshake(p)
+		s.send.configureHandshake(p, true)
+		s.connRetry = nil
 		if s.farSockID != 0 {
 			// we've received a sockID from the server, hopefully this means we've finished the handshake
 			s.sockState = sockStateConnected
+			s.connTimeout = nil
 		} else {
 			// handshake isn't done yet, send it back with the cookie we received
-			err := s.sendHandshake(p.SynCookie, packet.HsRequest)
+			err := s.sendHandshake(p.SynCookie, packet.HsResponse)
 			if err != nil {
 				log.Printf("Socket handshake response failed: %s", err.Error())
 				return false
@@ -407,9 +455,55 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		}
 		return true
 
+	case sockStateRendezvous: // client attempting to rendezvous with another client
+		if p.ReqType == packet.HsRefused {
+			s.sockState = sockStateRefused
+			return true
+		}
+		if p.ReqType != packet.HsRendezvous || s.farSockID == 0 {
+			return true // not a request packet, ignore
+		}
+		if !s.checkValidHandshake(m, p, from) || from != s.raddr || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
+			s.sockState = sockStateCorrupted
+			return true
+		}
+		/* not quite sure how to negotiate this, assuming split-brain for now
+		if p.InitPktSeq != s.send.sendPktSeq {
+			s.sockState = sockStateCorrupted
+			return true
+		}
+		*/
+		s.farSockID = p.SockID
+		s.m.endRendezvous(s)
+
+		if s.mtu.get() > p.MaxPktSize {
+			s.mtu.set(p.MaxPktSize)
+		}
+		s.recv.configureHandshake(p)
+		s.send.configureHandshake(p, false)
+		s.connRetry = nil
+		s.sockState = sockStateConnected
+		s.connTimeout = nil
+
+		// send the final rendezvous packet
+		err := s.sendHandshake(p.SynCookie, packet.HsResponse2)
+		if err != nil {
+			log.Printf("Socket handshake response failed: %s", err.Error())
+			return false
+		}
+		return true
+
 	case sockStateConnected: // server repeating a handshake to a client
 		if s.isServer && p.ReqType == packet.HsRequest {
+			// client didn't receive our response handshake, resend it
 			err := s.sendHandshake(p.SynCookie, packet.HsResponse)
+			if err != nil {
+				log.Printf("Socket handshake response failed: %s", err.Error())
+				return false
+			}
+		} else if !s.isServer && p.ReqType == packet.HsResponse {
+			// this is a rendezvous connection and the peer didn't receive it, resend it
+			err := s.sendHandshake(p.SynCookie, packet.HsResponse2)
 			if err != nil {
 				log.Printf("Socket handshake response failed: %s", err.Error())
 				return false
@@ -429,7 +523,12 @@ func (s *udtSocket) senderFaultCorrupt(err error) {
 
 func (s *udtSocket) senderFaultTimeout() {
 	log.Printf("Socket shutdown due to peer timeout")
+	if s.sockState == sockStateRendezvous {
+		s.m.endRendezvous(s)
+	}
 	s.sockState = sockStateTimeout
+	s.connTimeout = nil
+	s.connRetry = nil
 	s.messageIn <- nil
 }
 

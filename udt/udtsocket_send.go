@@ -66,9 +66,11 @@ func newUdtSocketSend(s *udtSocket, closed <-chan struct{}, sendEvent <-chan rec
 	return ss
 }
 
-func (s *udtSocketSend) configureHandshake(p *packet.HandshakePacket) {
-	s.recvAckSeq = p.InitPktSeq
-	s.sendPktSeq = p.InitPktSeq
+func (s *udtSocketSend) configureHandshake(p *packet.HandshakePacket, resetSeq bool) {
+	if resetSeq {
+		s.recvAckSeq = p.InitPktSeq
+		s.sendPktSeq = p.InitPktSeq
+	}
 	s.flowWindowSize = uint(p.MaxFlowWinSize)
 }
 
@@ -131,13 +133,13 @@ func (s *udtSocketSend) goSendEvent() {
 				s.ingestCongestion(sp, evt.now)
 			}
 			s.sendState = s.reevalSendState()
-		case _, _ = <-closed:
+		case <-closed:
 			return
-		case _ = <-s.ack2SentEvent: // ACK2 unlocked
+		case <-s.ack2SentEvent: // ACK2 unlocked
 			s.ack2SentEvent = nil
 		case now := <-s.expTimerEvent: // EXP event
 			s.expEvent(now)
-		case _ = <-s.sndEvent: // SND event
+		case <-s.sndEvent: // SND event
 			s.sndEvent = nil
 			if s.sendState == sendStateSending {
 				s.sendState = s.reevalSendState()

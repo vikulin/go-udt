@@ -47,6 +47,18 @@ func ListenUDTContext(ctx context.Context, network string, addr string) (net.Lis
 	return listenUDT(ctx, DefaultConfig(), network, addr)
 }
 
+// RendezvousUDT establishes an outbound UDT connection using the supplied net, laddr and raddr.
+// See function net.DialUDP for a description of net, laddr and raddr.
+func RendezvousUDT(network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
+	return rendezvousUDT(context.Background(), DefaultConfig(), network, laddr, raddr, isStream)
+}
+
+// RendezvousUDTContext establishes an outbound UDT connection using the supplied net, laddr and raddr.
+// See function net.DialUDP for a description of net, laddr and raddr.
+func RendezvousUDTContext(ctx context.Context, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
+	return rendezvousUDT(ctx, DefaultConfig(), network, laddr, raddr, isStream)
+}
+
 func dialUDT(ctx context.Context, config *Config, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
 	m, err := multiplexerFor(ctx, network, laddr)
 	if err != nil {
@@ -55,6 +67,21 @@ func dialUDT(ctx context.Context, config *Config, network string, laddr string, 
 
 	s := m.newSocket(config, raddr, false, !isStream)
 	err = s.startConnect()
+	if err != nil {
+		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
+	}
+
+	return s, nil
+}
+
+func rendezvousUDT(ctx context.Context, config *Config, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
+	m, err := multiplexerFor(ctx, network, laddr)
+	if err != nil {
+		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
+	}
+
+	s := m.newSocket(config, raddr, false, !isStream)
+	err = s.startRendezvous()
 	if err != nil {
 		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
 	}

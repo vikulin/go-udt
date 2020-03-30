@@ -20,13 +20,12 @@ type Config struct {
 	CongestionForSocket func(sock *udtSocket) CongestionControl                         // create or otherwise return the CongestionControl for this socket
 
 	// imported from reference implementation
-	UDT_FC         uint          // m_iFlightFlagSize (max 32)
-	UDT_SNDBUF     uint          // m_iSndBufSize
-	UDT_RCVBUF     uint          // m_iRcvBufSize (min m_iFlightFlagSize packets)
-	UDT_LINGER     time.Duration // m_Linger
-	UDT_RENDEZVOUS bool          // m_bRendezvous
-	UDT_SNDTIMEO   int           // m_iSndTimeOut
-	UDT_RCVTIMEO   int           // m_iRcvTimeOut
+	UDT_FC       uint          // m_iFlightFlagSize (max 32)
+	UDT_SNDBUF   uint          // m_iSndBufSize
+	UDT_RCVBUF   uint          // m_iRcvBufSize (min m_iFlightFlagSize packets)
+	UDT_LINGER   time.Duration // m_Linger
+	UDT_SNDTIMEO int           // m_iSndTimeOut
+	UDT_RCVTIMEO int           // m_iRcvTimeOut
 }
 
 // Listen listens for incoming UDT connections addressed to the local address laddr.
@@ -38,6 +37,11 @@ func (c *Config) Listen(ctx context.Context, network string, addr string) (net.L
 // Dial establishes an outbound UDT connection using the supplied net, laddr and raddr.  See function net.DialUDP for a description of net, laddr and raddr.
 func (c *Config) Dial(ctx context.Context, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
 	return dialUDT(ctx, c, network, laddr, raddr, isStream)
+}
+
+// Rendezvous establishes an outbound UDT connection using the supplied net, laddr and raddr.  See function net.DialUDP for a description of net, laddr and raddr.
+func (c *Config) Rendezvous(ctx context.Context, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
+	return rendezvousUDT(ctx, c, network, laddr, raddr, isStream)
 }
 
 // DefaultConfig constructs a Config with default values
