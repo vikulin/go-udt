@@ -20,12 +20,10 @@ type Config struct {
 	CongestionForSocket func(sock *udtSocket) CongestionControl                         // create or otherwise return the CongestionControl for this socket
 
 	// imported from reference implementation
-	UDT_FC       uint          // m_iFlightFlagSize (max 32)
-	UDT_SNDBUF   uint          // m_iSndBufSize
-	UDT_RCVBUF   uint          // m_iRcvBufSize (min m_iFlightFlagSize packets)
-	UDT_LINGER   time.Duration // m_Linger
-	UDT_SNDTIMEO int           // m_iSndTimeOut
-	UDT_RCVTIMEO int           // m_iRcvTimeOut
+	UDT_FC     uint          // m_iFlightFlagSize (max 32)
+	UDT_SNDBUF uint          // m_iSndBufSize
+	UDT_RCVBUF uint          // m_iRcvBufSize (min m_iFlightFlagSize packets)
+	UDT_LINGER time.Duration // m_Linger
 }
 
 // Listen listens for incoming UDT connections addressed to the local address laddr.

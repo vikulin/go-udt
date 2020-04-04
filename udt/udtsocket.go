@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/odysseus654/go-udt/udt/packet"
@@ -52,14 +53,14 @@ type udtSocket struct {
 	sockID     uint32       // our sockID
 	farSockID  uint32       // the peer's sockID
 
-	sockState      sockState    // socket state - used mostly during handshakes
-	mtu            atomicUint32 // the negotiated maximum packet size
-	maxFlowWinSize uint         // receiver: maximum unacknowledged packet count
-	//rtoPeriod      time.Duration // set by congestion control, standardized on 4 * RTT + RTTVar
-	//	ackPeriod      time.Duration       // receiver: used to (re-)send an ACK. Set by the congestion control module, never greater than 0.01s
-	//	nakPeriod      time.Duration       // receiver: used to (re-)send a NAK. 4 * RTT + RTTVar + 0.01s
-	//	expPeriod      time.Duration       // sender: expCount * (4 * RTT + RTTVar + 0.01s)
-	currPartialRead []byte // stream connections: currently reading message (for partial reads). Owned by client caller (Read)
+	sockState           sockState    // socket state - used mostly during handshakes
+	mtu                 atomicUint32 // the negotiated maximum packet size
+	maxFlowWinSize      uint         // receiver: maximum unacknowledged packet count
+	currPartialRead     []byte       // stream connections: currently reading message (for partial reads). Owned by client caller (Read)
+	readDeadline        *time.Timer  // if set, then calls to Read() will return "timeout" after this time
+	readDeadlinePassed  bool         // if set, then calls to Read() will return "timeout"
+	writeDeadline       *time.Timer  // if set, then calls to Write() will return "timeout" after this time
+	writeDeadlinePassed bool         // if set, then calls to Write() will return "timeout"
 
 	rttProt sync.RWMutex // lock must be held before referencing rtt/rttVar
 	rtt     uint         // receiver: estimated roundtrip time. (in microseconds)
@@ -114,11 +115,28 @@ type udtSocket struct {
 *******************************************************************************/
 
 // Grab the next data packet
-func (s *udtSocket) fetchReadPacket(blocking bool) []byte {
+func (s *udtSocket) fetchReadPacket(blocking bool) ([]byte, error) {
 	var result []byte
 	if blocking {
-		result = <-s.messageIn
-		return result
+		for {
+			if s.readDeadlinePassed {
+				return nil, syscall.ETIMEDOUT
+			}
+			var deadline <-chan time.Time
+			if s.readDeadline != nil {
+				deadline = s.readDeadline.C
+			}
+			select {
+			case result = <-s.messageIn:
+				return result, nil
+			case _, ok := <-deadline:
+				if !ok {
+					continue
+				}
+				s.readDeadlinePassed = true
+				return nil, syscall.ETIMEDOUT
+			}
+		}
 	}
 
 	select {
@@ -126,9 +144,9 @@ func (s *udtSocket) fetchReadPacket(blocking bool) []byte {
 		// ok we have a message
 	default:
 		// ok we've read some stuff and there's nothing immediately available
-		return nil
+		return nil, nil
 	}
-	return result
+	return result, nil
 }
 
 func (s *udtSocket) connectionError() error {
@@ -146,12 +164,21 @@ func (s *udtSocket) connectionError() error {
 }
 
 // TODO: int sendmsg(const char* data, int len, int msttl, bool inorder)
+
+// Read reads data from the connection.
+// Read can be made to time out and return an Error with Timeout() == true
+// after a fixed time limit; see SetDeadline and SetReadDeadline.
+// (required for net.Conn implementation)
 func (s *udtSocket) Read(p []byte) (n int, err error) {
 	connErr := s.connectionError()
 	if s.isDatagram {
 		// for datagram sockets, block until we have a message to return and then return it
 		// if the buffer isn't big enough, return a truncated message (discarding the rest) and return an error
-		msg := s.fetchReadPacket(connErr == nil)
+		msg, rerr := s.fetchReadPacket(connErr == nil)
+		if rerr != nil {
+			err = rerr
+			return
+		}
 		if msg == nil && connErr != nil {
 			err = connErr
 			return
@@ -169,7 +196,12 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 		for idx < l {
 			if s.currPartialRead == nil {
 				// Grab the next data packet
-				s.currPartialRead = s.fetchReadPacket(n == 0 && connErr == nil)
+				currPartialRead, rerr := s.fetchReadPacket(n == 0 && connErr == nil)
+				s.currPartialRead = currPartialRead
+				if rerr != nil {
+					err = rerr
+					return
+				}
 				if s.currPartialRead == nil {
 					if n != 0 {
 						return
@@ -194,6 +226,10 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 	return
 }
 
+// Write writes data to the connection.
+// Write can be made to time out and return an Error with Timeout() == true
+// after a fixed time limit; see SetDeadline and SetWriteDeadline.
+// (required for net.Conn implementation)
 func (s *udtSocket) Write(p []byte) (n int, err error) {
 	// at the moment whatever we have right now we'll shove it into a channel and return
 	// on the other side:
@@ -212,10 +248,34 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 	}
 
 	n = len(p)
-	s.messageOut <- sendMessage{content: p, tim: time.Now()}
-	return
+
+	for {
+		if s.writeDeadlinePassed {
+			err = syscall.ETIMEDOUT
+			return
+		}
+		var deadline <-chan time.Time
+		if s.writeDeadline != nil {
+			deadline = s.writeDeadline.C
+		}
+		select {
+		case s.messageOut <- sendMessage{content: p, tim: time.Now()}:
+			// send successful
+			return
+		case _, ok := <-deadline:
+			if !ok {
+				continue
+			}
+			s.writeDeadlinePassed = true
+			err = syscall.ETIMEDOUT
+			return
+		}
+	}
 }
 
+// Close closes the connection.
+// Any blocked Read or Write operations will be unblocked and return errors.
+// (required for net.Conn implementation)
 func (s *udtSocket) Close() error {
 	if s.sockState == sockStateClosed {
 		return nil // already closed
@@ -243,26 +303,81 @@ func (s *udtSocket) handleClose() (err error) {
 	return nil
 }
 
+// LocalAddr returns the local network address.
+// (required for net.Conn implementation)
 func (s *udtSocket) LocalAddr() net.Addr {
 	return s.m.laddr
 }
 
+// RemoteAddr returns the remote network address.
+// (required for net.Conn implementation)
 func (s *udtSocket) RemoteAddr() net.Addr {
 	return s.raddr
 }
 
+// SetDeadline sets the read and write deadlines associated
+// with the connection. It is equivalent to calling both
+// SetReadDeadline and SetWriteDeadline.
+//
+// A deadline is an absolute time after which I/O operations
+// fail with a timeout (see type Error) instead of
+// blocking. The deadline applies to all future and pending
+// I/O, not just the immediately following call to Read or
+// Write. After a deadline has been exceeded, the connection
+// can be refreshed by setting a deadline in the future.
+//
+// An idle timeout can be implemented by repeatedly extending
+// the deadline after successful Read or Write calls.
+//
+// A zero value for t means I/O operations will not time out.
+//
+// Note that if a TCP connection has keep-alive turned on,
+// which is the default unless overridden by Dialer.KeepAlive
+// or ListenConfig.KeepAlive, then a keep-alive failure may
+// also return a timeout error. On Unix systems a keep-alive
+// failure on I/O can be detected using
+// errors.Is(err, syscall.ETIMEDOUT).
+// (required for net.Conn implementation)
 func (s *udtSocket) SetDeadline(t time.Time) error {
-	// todo set timeout through EXP and SND
+	s.setDeadline(t, &s.readDeadline, &s.readDeadlinePassed)
+	s.setDeadline(t, &s.writeDeadline, &s.writeDeadlinePassed)
 	return nil
 }
 
+func (s *udtSocket) setDeadline(dl time.Time, timer **time.Timer, timerPassed *bool) {
+	if *timer == nil {
+		*timer = time.NewTimer(dl.Sub(time.Now()))
+	} else {
+		now := time.Now()
+		if dl.Before(now) {
+			*timerPassed = true
+		}
+		(*timer).Stop()
+		_, _ = <-(*timer).C
+		if dl.After(now) {
+			*timerPassed = false
+			(*timer).Reset(dl.Sub(time.Now()))
+		}
+	}
+}
+
+// SetReadDeadline sets the deadline for future Read calls
+// and any currently-blocked Read call.
+// A zero value for t means Read will not time out.
+// (required for net.Conn implementation)
 func (s *udtSocket) SetReadDeadline(t time.Time) error {
-	// todo set timeout through EXP
+	s.setDeadline(t, &s.readDeadline, &s.readDeadlinePassed)
 	return nil
 }
 
+// SetWriteDeadline sets the deadline for future Write calls
+// and any currently-blocked Write call.
+// Even if write times out, it may return n > 0, indicating that
+// some of the data was successfully written.
+// A zero value for t means Write will not time out.
+// (required for net.Conn implementation)
 func (s *udtSocket) SetWriteDeadline(t time.Time) error {
-	// todo set timeout through EXP or SND
+	s.setDeadline(t, &s.writeDeadline, &s.writeDeadlinePassed)
 	return nil
 }
 
