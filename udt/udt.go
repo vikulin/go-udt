@@ -66,10 +66,7 @@ func dialUDT(ctx context.Context, config *Config, network string, laddr string, 
 	}
 
 	s := m.newSocket(config, raddr, false, !isStream)
-	err = s.startConnect()
-	if err != nil {
-		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
-	}
+	s.startConnect()
 
 	return s, nil
 }
@@ -77,14 +74,11 @@ func dialUDT(ctx context.Context, config *Config, network string, laddr string, 
 func rendezvousUDT(ctx context.Context, config *Config, network string, laddr string, raddr *net.UDPAddr, isStream bool) (net.Conn, error) {
 	m, err := multiplexerFor(ctx, network, laddr)
 	if err != nil {
-		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
+		return nil, &net.OpError{Op: "rendezvous", Net: network, Source: nil, Addr: raddr, Err: err}
 	}
 
 	s := m.newSocket(config, raddr, false, !isStream)
-	err = s.startRendezvous()
-	if err != nil {
-		return nil, &net.OpError{Op: "dial", Net: network, Source: nil, Addr: raddr, Err: err}
-	}
+	s.startRendezvous()
 
 	return s, nil
 }

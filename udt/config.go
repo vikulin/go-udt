@@ -15,15 +15,15 @@ type Config struct {
 	ListenReplayWindow time.Duration // length of time to wait for repeated incoming connections
 	MaxPacketSize      uint          // Upper limit on maximum packet size (0 = unlimited)
 	MaxBandwidth       uint64        // Maximum bandwidth to take with this connection (in bytes/sec, 0 = unlimited)
+	LingerTime         time.Duration // time to wait for retransmit requests after connection shutdown
 
 	CanAccept           func(hsPacket *packet.HandshakePacket, from *net.UDPAddr) error // can this listener accept this connection?
 	CongestionForSocket func(sock *udtSocket) CongestionControl                         // create or otherwise return the CongestionControl for this socket
 
 	// imported from reference implementation
-	UDT_FC     uint          // m_iFlightFlagSize (max 32)
-	UDT_SNDBUF uint          // m_iSndBufSize
-	UDT_RCVBUF uint          // m_iRcvBufSize (min m_iFlightFlagSize packets)
-	UDT_LINGER time.Duration // m_Linger
+	UDT_FC     uint // m_iFlightFlagSize (max 32)
+	UDT_SNDBUF uint // m_iSndBufSize
+	UDT_RCVBUF uint // m_iRcvBufSize (min m_iFlightFlagSize packets)
 }
 
 // Listen listens for incoming UDT connections addressed to the local address laddr.
@@ -48,6 +48,7 @@ func DefaultConfig() *Config {
 		CanAcceptDgram:     true,
 		CanAcceptStream:    true,
 		ListenReplayWindow: 5 * time.Minute,
+		LingerTime:         180 * time.Second,
 		CongestionForSocket: func(sock *udtSocket) CongestionControl {
 			return &NativeCongestionControl{}
 		},

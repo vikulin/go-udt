@@ -71,15 +71,18 @@ type udtSocket struct {
 	bandwidth       uint         // bandwidth reported from peer (packets/sec)
 
 	// channels
-	messageIn  chan []byte         // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
-	messageOut chan<- sendMessage  // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
-	recvEvent  chan<- recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
-	sendEvent  chan<- recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
-	closed     chan struct{}       // closed when socket is closed
+	messageIn    chan []byte         // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
+	messageOut   chan<- sendMessage  // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+	recvEvent    chan<- recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
+	sendEvent    chan<- recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
+	sendPacket   chan packet.Packet  // packets to send out on the wire (once goManageConnection is running)
+	sockShutdown chan struct{}       // closed when socket is shutdown
+	sockClosed   chan struct{}       // closed when socket is closed
 
 	// timers
 	connTimeout <-chan time.Time // connecting: fires when connection attempt times out
 	connRetry   <-chan time.Time // connecting: fires when connection attempt to be retried
+	lingerTimer <-chan time.Time // after disconnection, fires once our linger timer runs out
 
 	send *udtSocketSend // reference to sending side of this socket
 	recv *udtSocketRecv // reference to receiving side of this socket
@@ -277,30 +280,25 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 // Any blocked Read or Write operations will be unblocked and return errors.
 // (required for net.Conn implementation)
 func (s *udtSocket) Close() error {
-	if s.sockState == sockStateClosed {
+	if !s.isOpen() {
 		return nil // already closed
 	}
 
 	// send shutdown packet
-	err := s.sendPacket(&packet.ShutdownPacket{})
-	if err != nil {
-		return err
-	}
+	s.sendPacket <- &packet.ShutdownPacket{}
 
-	s.cong.close()
-
-	s.handleClose()
+	s.shutdown(sockStateClosed, true, nil)
 	close(s.messageOut)
 	return nil
 }
 
-func (s *udtSocket) handleClose() (err error) {
-	// Remove from connected socket list
-	s.sockState = sockStateClosed
-	s.m.closeSocket(s.sockID)
-
-	close(s.closed)
-	return nil
+func (s *udtSocket) isOpen() bool {
+	switch s.sockState {
+	case sockStateClosed, sockStateRefused, sockStateCorrupted, sockStateTimeout:
+		return false
+	default:
+		return true
+	}
 }
 
 // LocalAddr returns the local network address.
@@ -346,17 +344,23 @@ func (s *udtSocket) SetDeadline(t time.Time) error {
 
 func (s *udtSocket) setDeadline(dl time.Time, timer **time.Timer, timerPassed *bool) {
 	if *timer == nil {
-		*timer = time.NewTimer(dl.Sub(time.Now()))
+		if !dl.IsZero() {
+			*timer = time.NewTimer(dl.Sub(time.Now()))
+		}
 	} else {
 		now := time.Now()
-		if dl.Before(now) {
+		if !dl.IsZero() && dl.Before(now) {
 			*timerPassed = true
 		}
-		(*timer).Stop()
-		_, _ = <-(*timer).C
-		if dl.After(now) {
+		oldTime := *timer
+		if dl.IsZero() {
+			*timer = nil
+		}
+		oldTime.Stop()
+		_, _ = <-oldTime.C
+		if !dl.IsZero() && dl.After(now) {
 			*timerPassed = false
-			(*timer).Reset(dl.Sub(time.Now()))
+			oldTime.Reset(dl.Sub(time.Now()))
 		}
 	}
 }
@@ -389,11 +393,13 @@ func (s *udtSocket) SetWriteDeadline(t time.Time) error {
 func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isDatagram bool, raddr *net.UDPAddr) (s *udtSocket) {
 	now := time.Now()
 
-	closed := make(chan struct{}, 1)
+	sockClosed := make(chan struct{}, 1)
+	sockShutdown := make(chan struct{}, 1)
 	recvEvent := make(chan recvPktEvent, 256)
 	sendEvent := make(chan recvPktEvent, 256)
 	messageIn := make(chan []byte, 256)
 	messageOut := make(chan sendMessage, 256)
+	sendPacket := make(chan packet.Packet, 256)
 
 	mtu := m.mtu
 	if config.MaxPacketSize > 0 && config.MaxPacketSize < mtu {
@@ -416,18 +422,20 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 		messageOut:     messageOut,
 		recvEvent:      recvEvent,
 		sendEvent:      sendEvent,
-		closed:         closed,
+		sockClosed:     sockClosed,
+		sockShutdown:   sockShutdown,
 		deliveryRate:   16,
 		bandwidth:      1,
+		sendPacket:     sendPacket,
 	}
-	s.send = newUdtSocketSend(s, closed, sendEvent, messageOut)
-	s.recv = newUdtSocketRecv(s, closed, recvEvent, messageIn)
-	s.cong = newUdtSocketCc(s, closed)
+	s.send = newUdtSocketSend(s, sendEvent, messageOut)
+	s.recv = newUdtSocketRecv(s, recvEvent, messageIn)
+	s.cong = newUdtSocketCc(s)
 
 	return
 }
 
-func (s *udtSocket) startConnect() error {
+func (s *udtSocket) startConnect() {
 	s.cong.init(s.send.sendPktSeq)
 	s.sockState = sockStateConnecting
 
@@ -435,10 +443,10 @@ func (s *udtSocket) startConnect() error {
 	s.connRetry = time.After(250 * time.Millisecond)
 	go s.goManageConnection()
 
-	return s.sendHandshake(0, packet.HsRequest)
+	s.sendHandshake(0, packet.HsRequest)
 }
 
-func (s *udtSocket) startRendezvous() error {
+func (s *udtSocket) startRendezvous() {
 	s.cong.init(s.send.sendPktSeq)
 	s.sockState = sockStateRendezvous
 
@@ -447,17 +455,28 @@ func (s *udtSocket) startRendezvous() error {
 	go s.goManageConnection()
 
 	s.m.startRendezvous(s)
-	return s.sendHandshake(0, packet.HsRendezvous)
+	s.sendHandshake(0, packet.HsRendezvous)
 }
 
 func (s *udtSocket) goManageConnection() {
-	closed := s.closed
+	sockClosed := s.sockClosed
+	sockShutdown := s.sockShutdown
 	for {
 		select {
-		case <-closed:
+		case <-s.lingerTimer: // linger timer expired, shut everything down
+			s.m.closeSocket(s.sockID)
+			close(s.sockClosed)
 			return
+		case _, _ = <-sockShutdown:
+			// catching this to force re-evaluation of this select (catching the linger timer)
+		case _, _ = <-sockClosed:
+			return
+		case p := <-s.sendPacket:
+			ts := uint32(time.Now().Sub(s.created) / time.Microsecond)
+			s.cong.onPktSent(p)
+			s.m.sendPacket(s.raddr, s.farSockID, ts, p)
 		case <-s.connTimeout: // connection timed out
-			s.senderFaultTimeout()
+			s.shutdown(sockStateTimeout, true, nil)
 		case <-s.connRetry: // resend connection attempt
 			s.connRetry = nil
 			switch s.sockState {
@@ -472,13 +491,13 @@ func (s *udtSocket) goManageConnection() {
 	}
 }
 
-func (s *udtSocket) sendHandshake(synCookie uint32, reqType packet.HandshakeReqType) error {
+func (s *udtSocket) sendHandshake(synCookie uint32, reqType packet.HandshakeReqType) {
 	sockType := packet.TypeSTREAM
 	if s.isDatagram {
 		sockType = packet.TypeDGRAM
 	}
 
-	return s.sendPacket(&packet.HandshakePacket{
+	p := &packet.HandshakePacket{
 		UdtVer:         uint32(s.udtVer),
 		SockType:       sockType,
 		InitPktSeq:     s.send.sendPktSeq,
@@ -488,13 +507,11 @@ func (s *udtSocket) sendHandshake(synCookie uint32, reqType packet.HandshakeReqT
 		SockID:         s.sockID,
 		SynCookie:      synCookie,
 		SockAddr:       s.raddr.IP,
-	})
-}
+	}
 
-func (s *udtSocket) sendPacket(p packet.Packet) error {
 	ts := uint32(time.Now().Sub(s.created) / time.Microsecond)
 	s.cong.onPktSent(p)
-	return s.m.sendPacket(s.raddr, s.farSockID, ts, p)
+	s.m.sendPacket(s.raddr, s.farSockID, ts, p)
 }
 
 // checkValidHandshake checks to see if we want to accept a new connection with this handshake.
@@ -528,12 +545,9 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		s.sockState = sockStateConnected
 		s.connTimeout = nil
 		s.connRetry = nil
+		go s.goManageConnection()
 
-		err := s.sendHandshake(p.SynCookie, packet.HsResponse)
-		if err != nil {
-			log.Printf("Socket handshake response failed: %s", err.Error())
-			return false
-		}
+		s.sendHandshake(p.SynCookie, packet.HsResponse)
 		return true
 
 	case sockStateConnecting: // client attempting to connect to server
@@ -562,11 +576,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 			s.connTimeout = nil
 		} else {
 			// handshake isn't done yet, send it back with the cookie we received
-			err := s.sendHandshake(p.SynCookie, packet.HsResponse)
-			if err != nil {
-				log.Printf("Socket handshake response failed: %s", err.Error())
-				return false
-			}
+			s.sendHandshake(p.SynCookie, packet.HsResponse)
 		}
 		return true
 
@@ -601,28 +611,16 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		s.connTimeout = nil
 
 		// send the final rendezvous packet
-		err := s.sendHandshake(p.SynCookie, packet.HsResponse2)
-		if err != nil {
-			log.Printf("Socket handshake response failed: %s", err.Error())
-			return false
-		}
+		s.sendHandshake(p.SynCookie, packet.HsResponse2)
 		return true
 
 	case sockStateConnected: // server repeating a handshake to a client
 		if s.isServer && p.ReqType == packet.HsRequest {
 			// client didn't receive our response handshake, resend it
-			err := s.sendHandshake(p.SynCookie, packet.HsResponse)
-			if err != nil {
-				log.Printf("Socket handshake response failed: %s", err.Error())
-				return false
-			}
+			s.sendHandshake(p.SynCookie, packet.HsResponse)
 		} else if !s.isServer && p.ReqType == packet.HsResponse {
 			// this is a rendezvous connection and the peer didn't receive it, resend it
-			err := s.sendHandshake(p.SynCookie, packet.HsResponse2)
-			if err != nil {
-				log.Printf("Socket handshake response failed: %s", err.Error())
-				return false
-			}
+			s.sendHandshake(p.SynCookie, packet.HsResponse2)
 		}
 		return true
 	}
@@ -630,20 +628,37 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 	return false
 }
 
-func (s *udtSocket) senderFaultCorrupt(err error) {
-	log.Printf("Socket shutdown due to protocol error: %s", err.Error())
-	s.sockState = sockStateCorrupted
-	s.messageIn <- nil
-}
-
-func (s *udtSocket) senderFaultTimeout() {
-	log.Printf("Socket shutdown due to peer timeout")
+func (s *udtSocket) shutdown(sockState sockState, permitLinger bool, err error) {
+	if !s.isOpen() {
+		return // already closed
+	}
+	if err != nil {
+		log.Printf("socket shutdown (type=%d), due to error: %s", int(sockState), err.Error())
+	} else {
+		log.Printf("socket shutdown (type=%d)", int(sockState))
+	}
 	if s.sockState == sockStateRendezvous {
 		s.m.endRendezvous(s)
 	}
-	s.sockState = sockStateTimeout
+	s.sockState = sockState
+	s.cong.close()
+
+	if permitLinger {
+		linger := s.Config.LingerTime
+		if linger == 0 {
+			linger = DefaultConfig().LingerTime
+		}
+		s.lingerTimer = time.After(linger)
+	}
+
 	s.connTimeout = nil
 	s.connRetry = nil
+	if permitLinger {
+		close(s.sockShutdown)
+	} else {
+		s.m.closeSocket(s.sockID)
+		close(s.sockClosed)
+	}
 	s.messageIn <- nil
 }
 
@@ -707,7 +722,7 @@ func (s *udtSocket) readPacket(m *multiplexer, p packet.Packet, from *net.UDPAdd
 	case *packet.HandshakePacket: // sent by both peers
 		s.readHandshake(m, sp, from)
 	case *packet.ShutdownPacket: // sent by either peer
-		s.handleClose()
+		s.shutdown(sockStateClosed, true, nil)
 	case *packet.AckPacket, *packet.LightAckPacket, *packet.NakPacket: // receiver -> sender
 		s.sendEvent <- recvPktEvent{pkt: p, now: now}
 	case *packet.UserDefControlPacket:

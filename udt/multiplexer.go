@@ -346,8 +346,7 @@ func (m *multiplexer) goWrite() {
 	}
 }
 
-func (m *multiplexer) sendPacket(destAddr *net.UDPAddr, destSockID uint32, ts uint32, p packet.Packet) error {
+func (m *multiplexer) sendPacket(destAddr *net.UDPAddr, destSockID uint32, ts uint32, p packet.Packet) {
 	p.SetHeader(destSockID, ts)
 	m.pktOut <- packetWrapper{pkt: p, dest: destAddr}
-	return nil
 }

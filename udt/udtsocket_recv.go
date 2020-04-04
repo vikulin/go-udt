@@ -16,10 +16,12 @@ const (
 
 type udtSocketRecv struct {
 	// channels
-	closed    <-chan struct{}     // closed when socket is closed
-	recvEvent <-chan recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
-	messageIn chan<- []byte       // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
-	socket    *udtSocket
+	sockClosed   <-chan struct{}      // closed when socket is closed
+	sockShutdown <-chan struct{}      // closed when socket is shutdown
+	recvEvent    <-chan recvPktEvent  // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
+	messageIn    chan<- []byte        // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
+	sendPacket   chan<- packet.Packet // send a packet out on the wire
+	socket       *udtSocket
 
 	farNextPktSeq      packet.PacketID // the peer's next largest packet ID expected.
 	farRecdPktSeq      packet.PacketID // the peer's last "received" packet ID (before any loss events)
@@ -45,12 +47,14 @@ type udtSocketRecv struct {
 	ackTimerEvent <-chan time.Time // controls when to send an ACK to our peer
 }
 
-func newUdtSocketRecv(s *udtSocket, closed <-chan struct{}, recvEvent <-chan recvPktEvent, messageIn chan<- []byte) *udtSocketRecv {
+func newUdtSocketRecv(s *udtSocket, recvEvent <-chan recvPktEvent, messageIn chan<- []byte) *udtSocketRecv {
 	sr := &udtSocketRecv{
 		socket:        s,
-		closed:        closed,
+		sockClosed:    s.sockClosed,
+		sockShutdown:  s.sockShutdown,
 		recvEvent:     recvEvent,
 		messageIn:     messageIn,
+		sendPacket:    s.sendPacket,
 		ackTimerEvent: time.After(synTime),
 	}
 	go sr.goReceiveEvent()
@@ -66,7 +70,8 @@ func (s *udtSocketRecv) configureHandshake(p *packet.HandshakePacket) {
 
 func (s *udtSocketRecv) goReceiveEvent() {
 	recvEvent := s.recvEvent
-	closed := s.closed
+	sockClosed := s.sockClosed
+	sockShutdown := s.sockShutdown
 	for {
 		select {
 		case evt, ok := <-recvEvent:
@@ -83,7 +88,9 @@ func (s *udtSocketRecv) goReceiveEvent() {
 			case *packet.ErrPacket:
 				s.ingestError(sp)
 			}
-		case _, ok := <-closed:
+		case _, _ = <-sockShutdown: // socket is shut down, no need to receive any further data
+			return
+		case _, _ = <-sockClosed: // socket is closed, leave now
 			return
 		case <-s.ackSentEvent:
 			s.ackSentEvent = nil
@@ -409,10 +416,7 @@ func (s *udtSocketRecv) sendLightACK() {
 	if ack != s.recvAck2 {
 		// send out a lite ACK
 		// to save time on buffer processing and bandwidth/AS measurement, a lite ACK only feeds back an ACK number
-		err := s.socket.sendPacket(&packet.LightAckPacket{PktSeqHi: ack})
-		if err != nil {
-			log.Printf("Cannot send (light) ACK: %s", err.Error())
-		}
+		s.sendPacket <- &packet.LightAckPacket{PktSeqHi: ack}
 	}
 }
 
@@ -531,10 +535,7 @@ func (s *udtSocketRecv) sendACK() {
 		p.EstLinkCap = uint32(bandwidth)
 		s.ackSentEvent2 = time.After(synTime)
 	}
-	err := s.socket.sendPacket(p)
-	if err != nil {
-		log.Printf("Cannot send ACK: %s", err.Error())
-	}
+	s.sendPacket <- p
 	s.ackSentEvent = time.After(time.Duration(rtt+4*rttVar) * time.Microsecond)
 }
 
@@ -565,12 +566,7 @@ func (s *udtSocketRecv) sendNAK(rl receiveLossHeap) {
 		}
 	}
 
-	err := s.socket.sendPacket(&packet.NakPacket{
-		CmpLossInfo: lossInfo,
-	})
-	if err != nil {
-		log.Printf("Cannot send NAK: %s", err.Error())
-	}
+	s.sendPacket <- &packet.NakPacket{CmpLossInfo: lossInfo}
 }
 
 // ingestData is called to process an (undocumented) OOB error packet

@@ -131,7 +131,7 @@ func (l *listener) goBumpSynEpoch() {
 	closed := l.closed
 	for {
 		select {
-		case _, ok := <-closed:
+		case _, _ = <-closed:
 			return
 		case <-time.After(64 * time.Second):
 			l.synEpoch++
@@ -197,7 +197,7 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 	}
 
 	if !l.checkValidHandshake(m, hsPacket, from) {
-		err := m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
+		m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
 			UdtVer:   hsPacket.UdtVer,
 			SockType: hsPacket.SockType,
 			// InitPkgSeq = 0
@@ -208,15 +208,12 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 			//SynCookie: newCookie,
 			SockAddr: from.IP,
 		})
-		if err != nil {
-			log.Printf("Listener handshake response failed: %s", err.Error())
-		}
 		return false
 	}
 
 	isSYN, newCookie := l.checkSynCookie(hsPacket.SynCookie, from)
 	if !isSYN {
-		err := m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
+		m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
 			UdtVer:   hsPacket.UdtVer,
 			SockType: hsPacket.SockType,
 			// InitPkgSeq = 0
@@ -227,10 +224,6 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 			SynCookie: newCookie,
 			SockAddr:  from.IP,
 		})
-		if err != nil {
-			log.Printf("Listener handshake response failed: %s", err.Error())
-			return false
-		}
 		return true
 	}
 
@@ -285,7 +278,7 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 		})
 	}
 	if !s.checkValidHandshake(m, hsPacket, from) {
-		err := m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
+		m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
 			UdtVer:   hsPacket.UdtVer,
 			SockType: hsPacket.SockType,
 			// InitPkgSeq = 0
@@ -296,9 +289,6 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 			//SynCookie: newCookie,
 			SockAddr: from.IP,
 		})
-		if err != nil {
-			log.Printf("Listener handshake response failed: %s", err.Error())
-		}
 		return false
 	}
 	if !s.readHandshake(m, hsPacket, from) {

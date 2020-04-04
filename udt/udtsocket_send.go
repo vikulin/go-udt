@@ -3,7 +3,6 @@ package udt
 import (
 	"container/heap"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/odysseus654/go-udt/udt/packet"
@@ -16,6 +15,7 @@ const (
 	sendStateSending                      // recently sent something, waiting for SND before sending more
 	sendStateWaiting                      // destination is full, waiting for them to process something and come back
 	sendStateProcessDrop                  // immediately re-process any drop list requests
+	sendStateShutdown                     // connection is shutdown
 )
 
 const (
@@ -24,10 +24,12 @@ const (
 
 type udtSocketSend struct {
 	// channels
-	closed     <-chan struct{}     // closed when socket is closed
-	sendEvent  <-chan recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
-	messageOut <-chan sendMessage  // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
-	socket     *udtSocket
+	sockClosed   <-chan struct{}      // closed when socket is closed
+	sockShutdown <-chan struct{}      // closed when socket is shutdown
+	sendEvent    <-chan recvPktEvent  // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
+	messageOut   <-chan sendMessage   // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+	sendPacket   chan<- packet.Packet // send a packet out on the wire
+	socket       *udtSocket
 
 	sendState      sendState       // current sender state
 	sendPktPend    sendPacketHeap  // list of packets that have been sent but not yet acknoledged
@@ -50,16 +52,18 @@ type udtSocketSend struct {
 	expTimerEvent <-chan time.Time // Fires when we haven't heard from the peer in a while
 }
 
-func newUdtSocketSend(s *udtSocket, closed <-chan struct{}, sendEvent <-chan recvPktEvent, messageOut <-chan sendMessage) *udtSocketSend {
+func newUdtSocketSend(s *udtSocket, sendEvent <-chan recvPktEvent, messageOut <-chan sendMessage) *udtSocketSend {
 	ss := &udtSocketSend{
 		socket:         s,
 		expCount:       1,
 		sendPktSeq:     packet.PacketID{randUint32()},
-		closed:         closed,
+		sockClosed:     s.sockClosed,
+		sockShutdown:   s.sockShutdown,
 		sendEvent:      sendEvent,
 		messageOut:     messageOut,
 		congestWindow:  atomicUint32{val: 16},
 		flowWindowSize: s.maxFlowWinSize,
+		sendPacket:     s.sendPacket,
 	}
 	ss.resetEXP(s.created)
 	go ss.goSendEvent()
@@ -90,9 +94,11 @@ func (s *udtSocketSend) SetPacketSendPeriod(snd time.Duration) {
 func (s *udtSocketSend) goSendEvent() {
 	sendEvent := s.sendEvent
 	messageOut := s.messageOut
-	closed := s.closed
+	sockClosed := s.sockClosed
 	for {
 		thisMsgChan := messageOut
+		sockShutdown := s.sockShutdown
+
 		switch s.sendState {
 		case sendStateIdle: // not waiting for anything, can send immediately
 			if s.msgPartialSend != nil { // we have a partial message waiting, try to send more of it now
@@ -105,11 +111,16 @@ func (s *udtSocketSend) goSendEvent() {
 				s.processSendExpire()
 			}
 			continue
+		case sendStateShutdown:
+			sockShutdown = nil
+			thisMsgChan = nil
 		default:
 			thisMsgChan = nil
 		}
 
 		select {
+		case _, _ = <-sockShutdown:
+			s.sendState = sendStateShutdown
 		case msg, ok := <-thisMsgChan: // nil if we can't process outgoing messages right now
 			if !ok {
 				return
@@ -133,7 +144,7 @@ func (s *udtSocketSend) goSendEvent() {
 				s.ingestCongestion(sp, evt.now)
 			}
 			s.sendState = s.reevalSendState()
-		case <-closed:
+		case _, _ = <-sockClosed:
 			return
 		case <-s.ack2SentEvent: // ACK2 unlocked
 			s.ack2SentEvent = nil
@@ -320,11 +331,7 @@ func (s *udtSocketSend) processSendExpire() bool {
 				s.sendLossList = nil
 			}
 
-			err := s.socket.sendPacket(dropMsg)
-			if err != nil {
-				log.Printf("Error sending message-drop packet: %s", err.Error())
-			}
-
+			s.sendPacket <- dropMsg
 			return true
 		}
 	}
@@ -341,10 +348,7 @@ func (s *udtSocketSend) sendDataPacket(dp sendPacketEntry, isResend bool) {
 	}
 
 	s.socket.cong.onDataPktSent(dp.pkt.Seq)
-	err := s.socket.sendPacket(dp.pkt)
-	if err != nil {
-		log.Printf("Error sending data packet: %s", err.Error())
-	}
+	s.sendPacket <- dp.pkt
 
 	// have we exceeded our recipient's window size?
 	s.sendState = s.reevalSendState()
@@ -378,7 +382,8 @@ func (s *udtSocketSend) ingestLightAck(p *packet.LightAckPacket, now time.Time) 
 
 func (s *udtSocketSend) assertValidSentPktID(pktType string, pktSeq packet.PacketID) bool {
 	if s.sendPktSeq.BlindDiff(pktSeq) < 0 {
-		s.socket.senderFaultCorrupt(fmt.Errorf("FAULT: Received an %s for packet %d, but the largest packet we've sent has been %d", pktType, pktSeq.Seq, s.sendPktSeq.Seq))
+		s.socket.shutdown(sockStateCorrupted, false,
+			fmt.Errorf("FAULT: Received an %s for packet %d, but the largest packet we've sent has been %d", pktType, pktSeq.Seq, s.sendPktSeq.Seq))
 		return false
 	}
 	return true
@@ -391,12 +396,8 @@ func (s *udtSocketSend) ingestAck(p *packet.AckPacket, now time.Time) {
 	// Send back an ACK2 with the same ACK sequence number in this ACK.
 	if s.ack2SentEvent == nil && p.AckSeqNo == s.sentAck2 {
 		s.sentAck2 = p.AckSeqNo
-		err := s.socket.sendPacket(&packet.Ack2Packet{AckSeqNo: p.AckSeqNo})
-		if err != nil {
-			log.Printf("Cannot send ACK2: %s", err.Error())
-		} else {
-			s.ack2SentEvent = time.After(synTime)
-		}
+		s.sendPacket <- &packet.Ack2Packet{AckSeqNo: p.AckSeqNo}
+		s.ack2SentEvent = time.After(synTime)
 	}
 
 	pktSeqHi := p.PktSeqHi
@@ -463,7 +464,7 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 		if thisEntry&0x80000000 != 0 {
 			thisPktID := packet.PacketID{Seq: thisEntry & 0x7FFFFFFF}
 			if idx+1 == clen {
-				s.socket.senderFaultCorrupt(fmt.Errorf("FAULT: While unpacking a NAK, the last entry (%x) was describing a start-of-range", thisEntry))
+				s.socket.shutdown(sockStateCorrupted, false, fmt.Errorf("FAULT: While unpacking a NAK, the last entry (%x) was describing a start-of-range", thisEntry))
 				return
 			}
 			if !s.assertValidSentPktID("NAK", thisPktID) {
@@ -471,7 +472,7 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 			}
 			lastEntry := p.CmpLossInfo[idx+1]
 			if lastEntry&0x80000000 != 0 {
-				s.socket.senderFaultCorrupt(fmt.Errorf("FAULT: While unpacking a NAK, a start-of-range (%x) was followed by another start-of-range (%x)", thisEntry, lastEntry))
+				s.socket.shutdown(sockStateCorrupted, false, fmt.Errorf("FAULT: While unpacking a NAK, a start-of-range (%x) was followed by another start-of-range (%x)", thisEntry, lastEntry))
 				return
 			}
 			lastPktID := packet.PacketID{Seq: lastEntry}
@@ -539,7 +540,7 @@ func (s *udtSocketSend) expEvent(currTime time.Time) {
 	// timeout: at least 16 expirations and must be greater than 10 seconds
 	if (s.expCount > 16) && (currTime.Sub(s.lastRecvTime) > 5*time.Second) {
 		// Connection is broken.
-		s.socket.senderFaultTimeout()
+		s.socket.shutdown(sockStateTimeout, true, nil)
 		return
 	}
 
@@ -558,10 +559,7 @@ func (s *udtSocketSend) expEvent(currTime time.Time) {
 		s.socket.cong.onTimeout()
 		s.sendState = sendStateProcessDrop // immediately restart transmission
 	} else {
-		err := s.socket.sendPacket(&packet.KeepAlivePacket{})
-		if err != nil {
-			log.Printf("Cannot send keep-alive: %s", err.Error())
-		}
+		s.sendPacket <- &packet.KeepAlivePacket{}
 	}
 
 	s.expCount++

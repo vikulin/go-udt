@@ -28,7 +28,7 @@ type congMsg struct {
 
 type udtSocketCc struct {
 	// channels
-	closed     <-chan struct{} // closed when socket is closed
+	sockClosed <-chan struct{} // closed when socket is closed
 	socket     *udtSocket
 	congestion CongestionControl // congestion control object for this socket
 	msgs       chan congMsg
@@ -38,7 +38,7 @@ type udtSocketCc struct {
 	sndPeriod  time.Duration   // delay between sending packets
 }
 
-func newUdtSocketCc(s *udtSocket, closed <-chan struct{}) *udtSocketCc {
+func newUdtSocketCc(s *udtSocket) *udtSocketCc {
 	newCongestion := s.Config.CongestionForSocket
 	if newCongestion == nil {
 		newCongestion = DefaultConfig().CongestionForSocket
@@ -46,7 +46,7 @@ func newUdtSocketCc(s *udtSocket, closed <-chan struct{}) *udtSocketCc {
 
 	sc := &udtSocketCc{
 		socket:     s,
-		closed:     closed,
+		sockClosed: s.sockClosed,
 		congestion: newCongestion(s),
 		msgs:       make(chan congMsg, 100),
 	}
@@ -56,7 +56,7 @@ func newUdtSocketCc(s *udtSocket, closed <-chan struct{}) *udtSocketCc {
 
 func (s *udtSocketCc) goCongestionEvent() {
 	msgs := s.msgs
-	closed := s.closed
+	sockClosed := s.sockClosed
 	for {
 		select {
 		case evt, ok := <-msgs:
@@ -84,7 +84,7 @@ func (s *udtSocketCc) goCongestionEvent() {
 			case congOnCustomMsg:
 				s.congestion.OnCustomMsg(s, evt.arg.(packet.UserDefControlPacket))
 			}
-		case _, ok := <-closed:
+		case _, _ = <-sockClosed:
 			return
 		}
 	}
