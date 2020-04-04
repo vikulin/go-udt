@@ -56,7 +56,7 @@ func newUdtSocketSend(s *udtSocket, sendEvent <-chan recvPktEvent, messageOut <-
 	ss := &udtSocketSend{
 		socket:         s,
 		expCount:       1,
-		sendPktSeq:     packet.PacketID{randUint32()},
+		sendPktSeq:     packet.PacketID{Seq: randUint32()},
 		sockClosed:     s.sockClosed,
 		sockShutdown:   s.sockShutdown,
 		sendEvent:      sendEvent,

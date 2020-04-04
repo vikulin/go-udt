@@ -3,7 +3,6 @@ package udt
 import (
 	"container/heap"
 	"log"
-	"math"
 	"time"
 
 	"github.com/furstenheim/nth_element/FloydRivest"
@@ -301,13 +300,13 @@ func (s *udtSocketRecv) attemptProcessPacket(p *packet.DataPacket, isNew bool) b
 						}
 					}
 					// in any case we can't continue with this
-					log.Printf("Message with id %s appears to be a broken fragment", msgID)
+					log.Printf("Message with id %d appears to be a broken fragment", msgID)
 					break
 				}
 				prevBoundary, _, prevMsg := prevPiece.GetMessageData()
 				if prevMsg != msgID {
 					// ...oops? previous piece isn't in the same message
-					log.Printf("Message with id %s appears to be a broken fragment", msgID)
+					log.Printf("Message with id %d appears to be a broken fragment", msgID)
 					break
 				}
 				pieces = append([]*packet.DataPacket{prevPiece}, pieces...)
@@ -339,7 +338,7 @@ func (s *udtSocketRecv) attemptProcessPacket(p *packet.DataPacket, isNew bool) b
 								cannotContinue = true
 							}
 						} else {
-							log.Printf("Message with id %s appears to be a broken fragment", msgID)
+							log.Printf("Message with id %d appears to be a broken fragment", msgID)
 						}
 						// in any case we can't continue with this
 						break
@@ -347,7 +346,7 @@ func (s *udtSocketRecv) attemptProcessPacket(p *packet.DataPacket, isNew bool) b
 					nextBoundary, _, nextMsg := nextPiece.GetMessageData()
 					if nextMsg != msgID {
 						// ...oops? previous piece isn't in the same message
-						log.Printf("Message with id %s appears to be a broken fragment", msgID)
+						log.Printf("Message with id %d appears to be a broken fragment", msgID)
 						break
 					}
 					pieces = append(pieces, nextPiece)
@@ -521,12 +520,18 @@ func (s *udtSocketRecv) sendACK() {
 
 	rtt, rttVar := s.socket.getRTT()
 
+	numPendPackets := int(s.farNextPktSeq.BlindDiff(s.farRecdPktSeq) - 1)
+	availWindow := int(s.socket.maxFlowWinSize) - numPendPackets
+	if availWindow < 2 {
+		availWindow = 2
+	}
+
 	p := &packet.AckPacket{
 		AckSeqNo:  s.lastACK,
 		PktSeqHi:  ack,
 		Rtt:       uint32(rtt),
 		RttVar:    uint32(rttVar),
-		BuffAvail: math.Max(2, s.rcvBuffer.getAvailBufSize()),
+		BuffAvail: uint32(availWindow),
 	}
 	if s.ackSentEvent2 == nil {
 		recvSpeed, bandwidth := s.getRcvSpeeds()

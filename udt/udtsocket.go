@@ -406,6 +406,14 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 		mtu = config.MaxPacketSize
 	}
 
+	maxFlowWinSize := config.MaxFlowWinSize
+	if maxFlowWinSize == 0 {
+		maxFlowWinSize = DefaultConfig().MaxFlowWinSize
+	}
+	if maxFlowWinSize < 32 {
+		maxFlowWinSize = 32
+	}
+
 	s = &udtSocket{
 		m:              m,
 		Config:         config,
@@ -415,7 +423,7 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 		udtVer:         4,
 		isServer:       isServer,
 		mtu:            atomicUint32{val: uint32(mtu)},
-		maxFlowWinSize: 25600, // todo: turn tunable (minimum 32)
+		maxFlowWinSize: maxFlowWinSize,
 		isDatagram:     isDatagram,
 		sockID:         sockID,
 		messageIn:      messageIn,

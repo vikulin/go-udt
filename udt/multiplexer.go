@@ -151,7 +151,7 @@ func discoverMTU(ourIP net.IP) (uint, error) {
 			var ipnet *net.IPNet
 			switch v := a.(type) {
 			case *net.IPAddr:
-				ipnet = &net.IPNet{v.IP, v.IP.DefaultMask()}
+				ipnet = &net.IPNet{IP: v.IP, Mask: v.IP.DefaultMask()}
 			case *net.IPNet:
 				ipnet = v
 			}
@@ -191,7 +191,7 @@ func (m *multiplexer) newSocket(config *Config, peer *net.UDPAddr, isServer bool
 }
 
 func (m *multiplexer) closeSocket(sockID uint32) bool {
-	if s, ok := m.sockets.Load(sockID); !ok {
+	if _, ok := m.sockets.Load(sockID); !ok {
 		return false
 	}
 	m.sockets.Delete(sockID)
@@ -337,7 +337,7 @@ func (m *multiplexer) goWrite() {
 				continue
 			}
 
-			log.Printf("Writing to %s", pw.pkt.SocketID())
+			log.Printf("Writing to %d", pw.pkt.SocketID())
 			if _, err = m.conn.WriteTo(buf[0:plen], pw.dest); err != nil {
 				// TODO: handle write error
 				log.Fatalf("Unable to write out: %s", err.Error())

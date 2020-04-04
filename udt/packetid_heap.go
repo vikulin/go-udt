@@ -61,7 +61,7 @@ func (h packetIDHeap) Min(greaterEqual packet.PacketID, lessEqual packet.PacketI
 			idx = next
 		}
 	}
-	return packet.PacketID{0}, -1
+	return packet.PacketID{Seq: 0}, -1
 }
 
 func (h packetIDHeap) compare(pktID packet.PacketID, idx int) int {

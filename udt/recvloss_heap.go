@@ -72,7 +72,7 @@ func (h receiveLossHeap) Min(greaterEqual packet.PacketID, lessEqual packet.Pack
 			idx = next
 		}
 	}
-	return packet.PacketID{0}, -1
+	return packet.PacketID{Seq: 0}, -1
 }
 
 // Find does a binary search of the heap for the specified packetID which is returned
