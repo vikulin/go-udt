@@ -5,12 +5,9 @@ import (
 )
 
 func TestACK2Packet(t *testing.T) {
-	testPacket(
-		&ack2Packet{
-			h: header{
-				ts:        100,
-				dstSockID: 59,
-			},
-			ackSeqNo: 90,
-		}, t)
+	pkt1 := &Ack2Packet{
+		AckSeqNo: 90,
+	}
+	pkt1.SetHeader(59, 100)
+	testPacket(pkt1, t)
 }

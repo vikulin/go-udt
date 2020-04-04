@@ -24,7 +24,7 @@ func (p *NakPacket) WriteTo(buf []byte) (uint, error) {
 	}
 
 	for _, elm := range p.CmpLossInfo {
-		endianness.PutUint32(buf[off:off+3], elm)
+		endianness.PutUint32(buf[off:off+4], elm)
 		off = off + 4
 	}
 
@@ -40,7 +40,7 @@ func (p *NakPacket) readFrom(data []byte) error {
 	p.CmpLossInfo = make([]uint32, numEntry)
 	for idx := range p.CmpLossInfo {
 		st := 16 + 4*idx
-		p.CmpLossInfo[idx] = endianness.Uint32(data[st : st+3])
+		p.CmpLossInfo[idx] = endianness.Uint32(data[st : st+4])
 	}
 	return nil
 }

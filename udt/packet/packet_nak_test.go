@@ -5,12 +5,9 @@ import (
 )
 
 func TestNAKPacket(t *testing.T) {
-	testPacket(
-		&nakPacket{
-			h: header{
-				ts:        100,
-				dstSockID: 59,
-			},
-			cmpLossInfo: 90,
-		}, t)
+	pkt1 := &NakPacket{
+		CmpLossInfo: []uint32{90},
+	}
+	pkt1.SetHeader(59, 100)
+	testPacket(pkt1, t)
 }

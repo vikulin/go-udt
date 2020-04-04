@@ -5,18 +5,27 @@ import (
 )
 
 func TestACKPacket(t *testing.T) {
-	testPacket(
-		&ackPacket{
-			h: header{
-				ts:        100,
-				dstSockID: 59,
-			},
-			ackSeqNo:    90,
-			pktSeqHi:    91,
-			rtt:         92,
-			rttVar:      93,
-			buffAvail:   94,
-			pktRecvRate: 95,
-			estLinkCap:  96,
-		}, t)
+	pkt1 := &AckPacket{
+		AckSeqNo:    90,
+		PktSeqHi:    PacketID{Seq: 91},
+		Rtt:         92,
+		RttVar:      93,
+		BuffAvail:   94,
+		IncludeLink: true,
+		PktRecvRate: 95,
+		EstLinkCap:  96,
+	}
+	pkt1.SetHeader(59, 100)
+	testPacket(pkt1, t)
+
+	pkt2 := &AckPacket{
+		AckSeqNo:    90,
+		PktSeqHi:    PacketID{Seq: 91},
+		Rtt:         92,
+		RttVar:      93,
+		BuffAvail:   94,
+		IncludeLink: false,
+	}
+	pkt2.SetHeader(59, 100)
+	testPacket(pkt2, t)
 }

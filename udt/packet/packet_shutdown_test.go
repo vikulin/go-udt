@@ -5,11 +5,7 @@ import (
 )
 
 func TestShutdownPacket(t *testing.T) {
-	testPacket(
-		&shutdownPacket{
-			h: header{
-				ts:        100,
-				dstSockID: 59,
-			},
-		}, t)
+	pkt1 := &ShutdownPacket{}
+	pkt1.SetHeader(59, 100)
+	testPacket(pkt1, t)
 }

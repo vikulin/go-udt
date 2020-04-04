@@ -19,12 +19,12 @@ func (p *UserDefControlPacket) WriteTo(buf []byte) (uint, error) {
 	}
 
 	// Sets the flag bit to indicate this is a control packet
-	endianness.PutUint16(buf[0:1], uint16(ptUserDefPkt)|flagBit16)
-	endianness.PutUint16(buf[2:3], p.msgType) // Write 16 bit reserved data
+	endianness.PutUint16(buf[0:2], uint16(ptUserDefPkt)|flagBit16)
+	endianness.PutUint16(buf[2:4], p.msgType) // Write 16 bit reserved data
 
-	endianness.PutUint32(buf[4:7], p.addtlInfo)
-	endianness.PutUint32(buf[8:11], p.ts)
-	endianness.PutUint32(buf[12:15], p.DstSockID)
+	endianness.PutUint32(buf[4:8], p.addtlInfo)
+	endianness.PutUint32(buf[8:12], p.ts)
+	endianness.PutUint32(buf[12:16], p.DstSockID)
 
 	copy(buf[16:], p.data)
 

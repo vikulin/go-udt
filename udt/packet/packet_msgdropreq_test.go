@@ -5,14 +5,11 @@ import (
 )
 
 func TestMsgDropReqPacket(t *testing.T) {
-	testPacket(
-		&msgDropReqPacket{
-			h: header{
-				ts:        100,
-				dstSockID: 59,
-			},
-			msgID:    90,
-			firstSeq: 91,
-			lastSeq:  92,
-		}, t)
+	pkt1 := &MsgDropReqPacket{
+		MsgID:    90,
+		FirstSeq: PacketID{Seq: 91},
+		LastSeq:  PacketID{Seq: 92},
+	}
+	pkt1.SetHeader(59, 100)
+	testPacket(pkt1, t)
 }

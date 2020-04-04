@@ -7,22 +7,19 @@ import (
 )
 
 func TestHandshakePacket(t *testing.T) {
-	read := testPacket(
-		&handshakePacket{
-			h: header{
-				ts:        100,
-				dstSockID: 59,
-			},
-			udtVer:         4,
-			sockType:       DGRAM,
-			initPktSeq:     50,
-			maxPktSize:     1000,
-			maxFlowWinSize: 500,
-			connType:       1,
-			sockID:         59,
-			synCookie:      978,
-			sockAddr:       net.ParseIP("127.0.0.1"),
-		}, t)
+	pkt1 := &HandshakePacket{
+		UdtVer:         4,
+		SockType:       TypeDGRAM,
+		InitPktSeq:     PacketID{Seq: 50},
+		MaxPktSize:     1000,
+		MaxFlowWinSize: 500,
+		ReqType:        1,
+		SockID:         59,
+		SynCookie:      978,
+		SockAddr:       net.ParseIP("127.0.0.1"),
+	}
+	pkt1.SetHeader(59, 100)
+	read := testPacket(pkt1, t)
 
-	log.Println((read.(*handshakePacket)).sockAddr)
+	log.Println((read.(*HandshakePacket)).SockAddr)
 }

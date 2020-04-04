@@ -30,16 +30,16 @@ func (p *AckPacket) WriteTo(buf []byte) (uint, error) {
 		return 0, err
 	}
 
-	endianness.PutUint32(buf[16:19], p.PktSeqHi.Seq)
-	endianness.PutUint32(buf[20:23], p.Rtt)
-	endianness.PutUint32(buf[24:27], p.RttVar)
-	endianness.PutUint32(buf[28:31], p.BuffAvail)
+	endianness.PutUint32(buf[16:20], p.PktSeqHi.Seq)
+	endianness.PutUint32(buf[20:24], p.Rtt)
+	endianness.PutUint32(buf[24:28], p.RttVar)
+	endianness.PutUint32(buf[28:32], p.BuffAvail)
 	if p.IncludeLink {
 		if l < 40 {
 			return 0, errors.New("packet too small")
 		}
-		endianness.PutUint32(buf[32:35], p.PktRecvRate)
-		endianness.PutUint32(buf[36:39], p.EstLinkCap)
+		endianness.PutUint32(buf[32:36], p.PktRecvRate)
+		endianness.PutUint32(buf[36:40], p.EstLinkCap)
 		return 40, nil
 	}
 
@@ -54,15 +54,15 @@ func (p *AckPacket) readFrom(data []byte) (err error) {
 	if p.AckSeqNo, err = p.readHdrFrom(data); err != nil {
 		return err
 	}
-	p.PktSeqHi = PacketID{endianness.Uint32(data[16:19])}
-	p.Rtt = endianness.Uint32(data[20:23])
-	p.RttVar = endianness.Uint32(data[24:27])
-	p.BuffAvail = endianness.Uint32(data[28:31])
+	p.PktSeqHi = PacketID{endianness.Uint32(data[16:20])}
+	p.Rtt = endianness.Uint32(data[20:24])
+	p.RttVar = endianness.Uint32(data[24:28])
+	p.BuffAvail = endianness.Uint32(data[28:32])
 	if l >= 36 {
 		p.IncludeLink = true
-		p.PktRecvRate = endianness.Uint32(data[32:35])
+		p.PktRecvRate = endianness.Uint32(data[32:36])
 		if l >= 40 {
-			p.EstLinkCap = endianness.Uint32(data[36:39])
+			p.EstLinkCap = endianness.Uint32(data[36:40])
 		}
 	}
 

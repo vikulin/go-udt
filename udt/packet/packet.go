@@ -97,12 +97,12 @@ func (h *ctrlHeader) writeHdrTo(buf []byte, msgType packetType, info uint32) (ui
 	}
 
 	// Sets the flag bit to indicate this is a control packet
-	endianness.PutUint16(buf[0:1], uint16(msgType)|flagBit16)
-	endianness.PutUint16(buf[2:3], uint16(0)) // Write 16 bit reserved data
+	endianness.PutUint16(buf[0:2], uint16(msgType)|flagBit16)
+	endianness.PutUint16(buf[2:4], uint16(0)) // Write 16 bit reserved data
 
-	endianness.PutUint32(buf[4:7], info)
-	endianness.PutUint32(buf[8:11], h.ts)
-	endianness.PutUint32(buf[12:15], h.DstSockID)
+	endianness.PutUint32(buf[4:8], info)
+	endianness.PutUint32(buf[8:12], h.ts)
+	endianness.PutUint32(buf[12:16], h.DstSockID)
 
 	return 16, nil
 }
@@ -112,14 +112,14 @@ func (h *ctrlHeader) readHdrFrom(data []byte) (addtlInfo uint32, err error) {
 	if l < 16 {
 		return 0, errors.New("packet too small")
 	}
-	addtlInfo = endianness.Uint32(data[4:7])
-	h.ts = endianness.Uint32(data[8:11])
-	h.DstSockID = endianness.Uint32(data[12:15])
+	addtlInfo = endianness.Uint32(data[4:8])
+	h.ts = endianness.Uint32(data[8:12])
+	h.DstSockID = endianness.Uint32(data[12:16])
 	return
 }
 
 func ReadPacketFrom(data []byte) (p Packet, err error) {
-	h := endianness.Uint32(data[0:3])
+	h := endianness.Uint32(data[0:4])
 	if h&flagBit32 == flagBit32 {
 		// this is a control packet
 		// Remove flag bit

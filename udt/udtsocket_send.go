@@ -210,7 +210,7 @@ func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan sendMessage) 
 			} else {
 				dp = &packet.DataPacket{
 					Seq:  s.sendPktSeq,
-					Data: partialSend.content[0 : mtu-1],
+					Data: partialSend.content[0:mtu],
 				}
 				s.msgPartialSend = &sendMessage{content: partialSend.content[mtu:], tim: partialSend.tim, ttl: partialSend.ttl}
 			}

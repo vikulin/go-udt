@@ -1,27 +1,17 @@
 package packet
 
 import (
-	"bytes"
 	"reflect"
 	"testing"
 )
 
-func TestDataPacket(t *testing.T) {
-	testPacket(
-		&dataPacket{
-			seq:       50,
-			ts:        1409,
-			dstSockID: 90,
-			data:      []byte("Hello UDT World!"),
-		}, t)
-}
-
-func testPacket(p packet, t *testing.T) (read packet) {
-	b := bytes.NewBuffer([]byte{})
-	if err := p.writeTo(b); err != nil {
+func testPacket(p Packet, t *testing.T) (read Packet) {
+	buf := make([]byte, 1500)
+	n, err := p.WriteTo(buf)
+	if err != nil {
 		t.Errorf("Unable to write packet: %s", err)
 	}
-	if p2, err := readPacketFrom(b); err != nil {
+	if p2, err := ReadPacketFrom(buf[0:n]); err != nil {
 		t.Errorf("Unable to read packet: %s", err)
 	} else {
 		if !reflect.DeepEqual(p, p2) {

@@ -21,7 +21,7 @@ func (p *LightAckPacket) WriteTo(buf []byte) (uint, error) {
 		return 0, err
 	}
 
-	endianness.PutUint32(buf[16:19], p.PktSeqHi.Seq)
+	endianness.PutUint32(buf[16:20], p.PktSeqHi.Seq)
 
 	return 20, nil
 }
@@ -34,7 +34,7 @@ func (p *LightAckPacket) readFrom(data []byte) (err error) {
 	if _, err = p.readHdrFrom(data); err != nil {
 		return err
 	}
-	p.PktSeqHi = PacketID{endianness.Uint32(data[16:19])}
+	p.PktSeqHi = PacketID{endianness.Uint32(data[16:20])}
 
 	return nil
 }

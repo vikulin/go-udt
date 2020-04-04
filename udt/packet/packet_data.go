@@ -2,13 +2,17 @@ package packet
 
 import "errors"
 
+// MessageBoundary flags for where this packet falls within a message
 type MessageBoundary uint8
 
 const (
-	// Message boundary flags
-	MbFirst  MessageBoundary = 2
-	MbLast   MessageBoundary = 1
-	MbOnly   MessageBoundary = 3
+	// MbFirst is the first packet in a multi-packet message
+	MbFirst MessageBoundary = 2
+	// MbLast is the last packet in a multi-packet message
+	MbLast MessageBoundary = 1
+	// MbOnly is the only packet in this message
+	MbOnly MessageBoundary = 3
+	// MbMiddle is neither the first nor last packet in a multi-packet message
 	MbMiddle MessageBoundary = 0
 )
 
@@ -51,10 +55,10 @@ func (dp *DataPacket) WriteTo(buf []byte) (uint, error) {
 	if l < ol {
 		return 0, errors.New("packet too small")
 	}
-	endianness.PutUint32(buf[0:3], dp.Seq.Seq&0x7FFFFFFF)
-	endianness.PutUint32(buf[4:7], dp.msg)
-	endianness.PutUint32(buf[8:11], dp.ts)
-	endianness.PutUint32(buf[12:15], dp.DstSockID)
+	endianness.PutUint32(buf[0:4], dp.Seq.Seq&0x7FFFFFFF)
+	endianness.PutUint32(buf[4:8], dp.msg)
+	endianness.PutUint32(buf[8:12], dp.ts)
+	endianness.PutUint32(buf[12:16], dp.DstSockID)
 	copy(buf[16:], dp.Data)
 
 	return uint(ol), nil
@@ -65,10 +69,10 @@ func (dp *DataPacket) readFrom(data []byte) (err error) {
 	if l < 16 {
 		return errors.New("packet too small")
 	}
-	//dp.seq = endianness.Uint32(data[0:3])
-	dp.msg = endianness.Uint32(data[4:7])
-	dp.ts = endianness.Uint32(data[8:11])
-	dp.DstSockID = endianness.Uint32(data[12:15])
+	//dp.seq = endianness.Uint32(data[0:4])
+	dp.msg = endianness.Uint32(data[4:8])
+	dp.ts = endianness.Uint32(data[8:12])
+	dp.DstSockID = endianness.Uint32(data[12:16])
 
 	// The data is whatever is what comes after the 16 bytes of header
 	dp.Data = make([]byte, l-16)
