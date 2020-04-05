@@ -46,13 +46,13 @@ type udtSocketRecv struct {
 	ackTimerEvent <-chan time.Time // controls when to send an ACK to our peer
 }
 
-func newUdtSocketRecv(s *udtSocket, recvEvent <-chan recvPktEvent, messageIn chan<- []byte) *udtSocketRecv {
+func newUdtSocketRecv(s *udtSocket) *udtSocketRecv {
 	sr := &udtSocketRecv{
 		socket:        s,
 		sockClosed:    s.sockClosed,
 		sockShutdown:  s.sockShutdown,
-		recvEvent:     recvEvent,
-		messageIn:     messageIn,
+		recvEvent:     s.recvEvent,
+		messageIn:     s.messageIn,
 		sendPacket:    s.sendPacket,
 		ackTimerEvent: time.After(synTime),
 	}

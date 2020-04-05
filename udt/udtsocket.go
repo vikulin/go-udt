@@ -79,9 +79,9 @@ type udtSocket struct {
 
 	// channels
 	messageIn     chan []byte          // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
-	messageOut    chan<- sendMessage   // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
-	recvEvent     chan<- recvPktEvent  // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
-	sendEvent     chan<- recvPktEvent  // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
+	messageOut    chan sendMessage     // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+	recvEvent     chan recvPktEvent    // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
+	sendEvent     chan recvPktEvent    // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
 	sendPacket    chan packet.Packet   // packets to send out on the wire (once goManageConnection is running)
 	shutdownEvent chan shutdownMessage // channel signals the connection to be shutdown
 	sockShutdown  chan struct{}        // closed when socket is shutdown
@@ -401,15 +401,6 @@ func (s *udtSocket) SetWriteDeadline(t time.Time) error {
 func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isDatagram bool, raddr *net.UDPAddr) (s *udtSocket) {
 	now := time.Now()
 
-	sockClosed := make(chan struct{}, 1)
-	sockShutdown := make(chan struct{}, 1)
-	recvEvent := make(chan recvPktEvent, 256)
-	sendEvent := make(chan recvPktEvent, 256)
-	messageIn := make(chan []byte, 256)
-	messageOut := make(chan sendMessage, 256)
-	sendPacket := make(chan packet.Packet, 256)
-	shutdownEvent := make(chan shutdownMessage, 5)
-
 	mtu := m.mtu
 	if config.MaxPacketSize > 0 && config.MaxPacketSize < mtu {
 		mtu = config.MaxPacketSize
@@ -435,22 +426,25 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 		maxFlowWinSize: maxFlowWinSize,
 		isDatagram:     isDatagram,
 		sockID:         sockID,
-		messageIn:      messageIn,
-		messageOut:     messageOut,
-		recvEvent:      recvEvent,
-		sendEvent:      sendEvent,
-		sockClosed:     sockClosed,
-		sockShutdown:   sockShutdown,
+		messageIn:      make(chan []byte, 256),
+		messageOut:     make(chan sendMessage, 256),
+		recvEvent:      make(chan recvPktEvent, 256),
+		sendEvent:      make(chan recvPktEvent, 256),
+		sockClosed:     make(chan struct{}, 1),
+		sockShutdown:   make(chan struct{}, 1),
 		deliveryRate:   16,
 		bandwidth:      1,
-		sendPacket:     sendPacket,
-		shutdownEvent:  shutdownEvent,
+		sendPacket:     make(chan packet.Packet, 256),
+		shutdownEvent:  make(chan shutdownMessage, 5),
 	}
-	s.send = newUdtSocketSend(s, sendEvent, messageOut)
-	s.recv = newUdtSocketRecv(s, recvEvent, messageIn)
 	s.cong = newUdtSocketCc(s)
 
 	return
+}
+
+func (s *udtSocket) launchProcessors() {
+	s.send = newUdtSocketSend(s)
+	s.recv = newUdtSocketRecv(s)
 }
 
 func (s *udtSocket) startConnect() error {
@@ -575,6 +569,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		if s.mtu.get() > p.MaxPktSize {
 			s.mtu.set(p.MaxPktSize)
 		}
+		s.launchProcessors()
 		s.recv.configureHandshake(p)
 		s.send.configureHandshake(p, true)
 		s.sockState = sockStateConnected
@@ -602,6 +597,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		if s.mtu.get() > p.MaxPktSize {
 			s.mtu.set(p.MaxPktSize)
 		}
+		s.launchProcessors()
 		s.recv.configureHandshake(p)
 		s.send.configureHandshake(p, true)
 		s.connRetry = nil
@@ -643,6 +639,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		if s.mtu.get() > p.MaxPktSize {
 			s.mtu.set(p.MaxPktSize)
 		}
+		s.launchProcessors()
 		s.recv.configureHandshake(p)
 		s.send.configureHandshake(p, false)
 		s.connRetry = nil

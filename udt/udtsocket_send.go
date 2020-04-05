@@ -53,15 +53,15 @@ type udtSocketSend struct {
 	expTimerEvent <-chan time.Time // Fires when we haven't heard from the peer in a while
 }
 
-func newUdtSocketSend(s *udtSocket, sendEvent <-chan recvPktEvent, messageOut <-chan sendMessage) *udtSocketSend {
+func newUdtSocketSend(s *udtSocket) *udtSocketSend {
 	ss := &udtSocketSend{
 		socket:         s,
 		expCount:       1,
 		sendPktSeq:     packet.PacketID{Seq: randUint32()},
 		sockClosed:     s.sockClosed,
 		sockShutdown:   s.sockShutdown,
-		sendEvent:      sendEvent,
-		messageOut:     messageOut,
+		sendEvent:      s.sendEvent,
+		messageOut:     s.messageOut,
 		congestWindow:  atomicUint32{val: 16},
 		flowWindowSize: s.maxFlowWinSize,
 		sendPacket:     s.sendPacket,
