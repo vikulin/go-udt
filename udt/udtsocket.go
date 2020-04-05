@@ -589,7 +589,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		if p.ReqType != packet.HsRequest {
 			return true // not a request packet, ignore
 		}
-		if !s.checkValidHandshake(m, p, from) || p.InitPktSeq != s.initPktSeq || from != s.raddr || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
+		if !s.checkValidHandshake(m, p, from) || p.InitPktSeq != s.initPktSeq || !from.IP.Equal(s.raddr.IP) || from.Port != s.raddr.Port || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
 			s.sockState = sockStateCorrupted
 			return true
 		}
@@ -624,7 +624,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		if p.ReqType != packet.HsRendezvous || s.farSockID == 0 {
 			return true // not a request packet, ignore
 		}
-		if !s.checkValidHandshake(m, p, from) || from != s.raddr || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
+		if !s.checkValidHandshake(m, p, from) || !from.IP.Equal(s.raddr.IP) || from.Port != s.raddr.Port || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
 			s.sockState = sockStateCorrupted
 			return true
 		}
@@ -652,7 +652,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		}
 
 		// send the final rendezvous packet
-		s.sendHandshake(p.SynCookie, packet.HsResponse2)
+		s.sendHandshake(p.SynCookie, packet.HsResponse)
 		return true
 
 	case sockStateConnected: // server repeating a handshake to a client
@@ -660,7 +660,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 			// client didn't receive our response handshake, resend it
 			s.sendHandshake(p.SynCookie, packet.HsResponse)
 		} else if !s.isServer && p.ReqType == packet.HsResponse {
-			// this is a rendezvous connection and the peer didn't receive it, resend it
+			// this is a rendezvous connection (re)send our response
 			s.sendHandshake(p.SynCookie, packet.HsResponse2)
 		}
 		return true

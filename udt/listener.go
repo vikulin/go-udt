@@ -190,33 +190,23 @@ func (l *listener) checkValidHandshake(m *multiplexer, p *packet.HandshakePacket
 	return true
 }
 
+func (l *listener) rejectHandshake(m *multiplexer, hsPacket *packet.HandshakePacket, from *net.UDPAddr) {
+	m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
+		UdtVer:   hsPacket.UdtVer,
+		SockType: hsPacket.SockType,
+		ReqType:  packet.HsRefused,
+		SockAddr: from.IP,
+	})
+}
+
 func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacket, from *net.UDPAddr) bool {
 
-	if hsPacket.ReqType != packet.HsRequest {
-		return false // not a request
-	}
-
-	if !l.checkValidHandshake(m, hsPacket, from) {
+	if hsPacket.ReqType == packet.HsRequest {
+		newCookie := l.genSynCookie(from)
 		m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
-			UdtVer:   hsPacket.UdtVer,
-			SockType: hsPacket.SockType,
-			// InitPkgSeq = 0
-			//MaxPktSize     uint32     // maximum packet size (including UDP/IP headers)
-			//MaxFlowWinSize uint32     // maximum flow window size
-			ReqType: packet.HsRefused,
-			// SockID = 0
-			//SynCookie: newCookie,
-			SockAddr: from.IP,
-		})
-		return false
-	}
-
-	isSYN, newCookie := l.checkSynCookie(hsPacket.SynCookie, from)
-	if !isSYN {
-		m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
-			UdtVer:   hsPacket.UdtVer,
-			SockType: hsPacket.SockType,
-			// InitPkgSeq = 0
+			UdtVer:     hsPacket.UdtVer,
+			SockType:   hsPacket.SockType,
+			InitPktSeq: hsPacket.InitPktSeq,
 			//MaxPktSize     uint32     // maximum packet size (including UDP/IP headers)
 			//MaxFlowWinSize uint32     // maximum flow window size
 			ReqType: packet.HsRequest,
@@ -225,6 +215,16 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 			SockAddr:  from.IP,
 		})
 		return true
+	}
+
+	isSYN, _ := l.checkSynCookie(hsPacket.SynCookie, from)
+	if !isSYN {
+		return false // ignore packets with failed SYN checks
+	}
+
+	if !l.checkValidHandshake(m, hsPacket, from) {
+		l.rejectHandshake(m, hsPacket, from)
+		return false
 	}
 
 	now := time.Now()
@@ -245,16 +245,19 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 
 	if !l.config.CanAcceptDgram && hsPacket.SockType == packet.TypeDGRAM {
 		log.Printf("Refusing new socket creation from listener requesting DGRAM")
+		l.rejectHandshake(m, hsPacket, from)
 		return false
 	}
 	if !l.config.CanAcceptStream && hsPacket.SockType == packet.TypeSTREAM {
 		log.Printf("Refusing new socket creation from listener requesting STREAM")
+		l.rejectHandshake(m, hsPacket, from)
 		return false
 	}
 	if l.config.CanAccept != nil {
 		err := l.config.CanAccept(hsPacket, from)
 		if err != nil {
 			log.Printf("New socket creation from listener rejected by config: %s", err.Error())
+			l.rejectHandshake(m, hsPacket, from)
 			return false
 		}
 	}
@@ -278,20 +281,11 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 		})
 	}
 	if !s.checkValidHandshake(m, hsPacket, from) {
-		m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
-			UdtVer:   hsPacket.UdtVer,
-			SockType: hsPacket.SockType,
-			// InitPkgSeq = 0
-			//MaxPktSize     uint32     // maximum packet size (including UDP/IP headers)
-			//MaxFlowWinSize uint32     // maximum flow window size
-			ReqType: packet.HsRefused,
-			// SockID = 0
-			//SynCookie: newCookie,
-			SockAddr: from.IP,
-		})
+		l.rejectHandshake(m, hsPacket, from)
 		return false
 	}
 	if !s.readHandshake(m, hsPacket, from) {
+		l.rejectHandshake(m, hsPacket, from)
 		return false
 	}
 
