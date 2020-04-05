@@ -16,6 +16,7 @@ const (
 	MbMiddle MessageBoundary = 0
 )
 
+// DataPacket is a UDT packet containing message data
 type DataPacket struct {
 	Seq       PacketID // packet sequence number (top bit = 0)
 	msg       uint32   // message sequence number (top three bits = message control)
@@ -24,19 +25,23 @@ type DataPacket struct {
 	Data      []byte   // payload
 }
 
+// SetHeader sets the fields common to UDT data packets
 func (dp *DataPacket) SetHeader(destSockID uint32, ts uint32) {
 	dp.DstSockID = destSockID
 	dp.ts = ts
 }
 
+// SocketID sets the Socket ID for this data packet
 func (dp *DataPacket) SocketID() (sockID uint32) {
 	return dp.DstSockID
 }
 
+// SendTime sets the timestamp field for this data packet
 func (dp *DataPacket) SendTime() (ts uint32) {
 	return dp.ts
 }
 
+// SetMessageData sets the message field for this data packet
 func (dp *DataPacket) SetMessageData(boundary MessageBoundary, order bool, msg uint32) {
 	var iOrder uint32 = 0
 	if order {
@@ -45,10 +50,12 @@ func (dp *DataPacket) SetMessageData(boundary MessageBoundary, order bool, msg u
 	dp.msg = (uint32(boundary) << 30) | iOrder | (msg & 0x1FFFFFFF)
 }
 
+// GetMessageData returns the message field for this data packet
 func (dp *DataPacket) GetMessageData() (MessageBoundary, bool, uint32) {
 	return MessageBoundary(dp.msg >> 30), (dp.msg & 0x20000000) != 0, dp.msg & 0x1FFFFFFF
 }
 
+// WriteTo writes this packet to the provided buffer, returning the length of the packet
 func (dp *DataPacket) WriteTo(buf []byte) (uint, error) {
 	l := len(buf)
 	ol := 16 + len(dp.Data)

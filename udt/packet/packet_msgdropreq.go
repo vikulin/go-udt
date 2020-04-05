@@ -6,6 +6,7 @@ import (
 	"errors"
 )
 
+// MsgDropReqPacket is a UDT packet notifying the peer of expired packets not worth trying to send
 type MsgDropReqPacket struct {
 	ctrlHeader
 	MsgID    uint32   // Message ID
@@ -13,6 +14,7 @@ type MsgDropReqPacket struct {
 	LastSeq  PacketID // Last sequence number in the message
 }
 
+// WriteTo writes this packet to the provided buffer, returning the length of the packet
 func (p *MsgDropReqPacket) WriteTo(buf []byte) (uint, error) {
 	l := len(buf)
 	if l < 24 {

@@ -7,20 +7,27 @@ import (
 	"net"
 )
 
+// HandshakeReqType describes the type of handshake packet
 type HandshakeReqType int32
 
 const (
-	HsRequest    HandshakeReqType = 1
+	// HsRequest represents an attempt to establish a new connection
+	HsRequest HandshakeReqType = 1
+	//HsRendezvous represents an attempt to establish a new connection using mutual rendezvous packets
 	HsRendezvous HandshakeReqType = 0
-	HsResponse   HandshakeReqType = -1
-	HsResponse2  HandshakeReqType = -2
-	HsRefused    HandshakeReqType = 1002
+	//HsResponse is a response to a handshake request
+	HsResponse HandshakeReqType = -1
+	//HsResponse2 is an acknowledgement that a HsResponse was received
+	HsResponse2 HandshakeReqType = -2
+	//HsRefused notifies the peer of a connection refusal
+	HsRefused HandshakeReqType = 1002
 )
 
+// HandshakePacket is a UDT packet used to negotiate a new connection
 type HandshakePacket struct {
 	ctrlHeader
 	UdtVer         uint32           // UDT version
-	SockType       socketType       // Socket Type (1 = STREAM or 2 = DGRAM)
+	SockType       SocketType       // Socket Type (1 = STREAM or 2 = DGRAM)
 	InitPktSeq     PacketID         // initial packet sequence number
 	MaxPktSize     uint32           // maximum packet size (including UDP/IP headers)
 	MaxFlowWinSize uint32           // maximum flow window size
@@ -30,6 +37,7 @@ type HandshakePacket struct {
 	SockAddr       net.IP           // the IP address of the UDP socket to which this packet is being sent
 }
 
+// WriteTo writes this packet to the provided buffer, returning the length of the packet
 func (p *HandshakePacket) WriteTo(buf []byte) (uint, error) {
 	l := len(buf)
 	if l < 64 {
@@ -65,7 +73,7 @@ func (p *HandshakePacket) readFrom(data []byte) error {
 		return err
 	}
 	p.UdtVer = endianness.Uint32(data[16:20])
-	p.SockType = socketType(endianness.Uint32(data[20:24]))
+	p.SockType = SocketType(endianness.Uint32(data[20:24]))
 	p.InitPktSeq = PacketID{endianness.Uint32(data[24:28])}
 	p.MaxPktSize = endianness.Uint32(data[28:32])
 	p.MaxFlowWinSize = endianness.Uint32(data[32:36])

@@ -6,11 +6,13 @@ import (
 	"errors"
 )
 
+// NakPacket is a UDT packet notifying the peer of lost packets
 type NakPacket struct {
 	ctrlHeader
 	CmpLossInfo []uint32 // integer array of compressed loss information
 }
 
+// WriteTo writes this packet to the provided buffer, returning the length of the packet
 func (p *NakPacket) WriteTo(buf []byte) (uint, error) {
 
 	off, err := p.writeHdrTo(buf, ptNak, 0)

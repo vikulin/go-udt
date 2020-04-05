@@ -4,6 +4,7 @@ import "errors"
 
 // Structure of packets and functions for writing/reading them
 
+// UserDefControlPacket is a UDT user-defined packet
 type UserDefControlPacket struct {
 	ctrlHeader
 	msgType   uint16 // user-defined message type
@@ -11,6 +12,7 @@ type UserDefControlPacket struct {
 	data      []byte
 }
 
+// WriteTo writes this packet to the provided buffer, returning the length of the packet
 func (p *UserDefControlPacket) WriteTo(buf []byte) (uint, error) {
 	l := len(buf)
 	ol := 16 + len(p.data)

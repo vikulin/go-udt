@@ -6,6 +6,7 @@ import (
 	"errors"
 )
 
+// AckPacket is a UDT packet acknowledging previously-received data packets and describing the state of the link
 type AckPacket struct {
 	ctrlHeader
 	AckSeqNo  uint32   // ACK sequence number
@@ -20,6 +21,7 @@ type AckPacket struct {
 	EstLinkCap  uint32 // Estimated link capacity (in number of packets per second)
 }
 
+// WriteTo writes this packet to the provided buffer, returning the length of the packet
 func (p *AckPacket) WriteTo(buf []byte) (uint, error) {
 	l := len(buf)
 	if l < 32 {

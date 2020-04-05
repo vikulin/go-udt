@@ -14,12 +14,14 @@ const (
 	flagBit16 = 1 << 15 // 16 bit
 )
 
-type socketType uint16
+// SocketType describes the kind of socket this is (i.e. streaming vs message)
+type SocketType uint16
 
 const (
-	// Socket types
-	TypeSTREAM socketType = 1
-	TypeDGRAM  socketType = 2
+	// TypeSTREAM describes a reliable streaming protocol (e.g. TCP)
+	TypeSTREAM SocketType = 1
+	// TypeDGRAM describes a partially-reliable messaging protocol
+	TypeDGRAM SocketType = 2
 )
 
 type packetType uint16
@@ -42,13 +44,15 @@ var (
 	endianness = binary.BigEndian
 )
 
+// Packet represents a UDT packet
 type Packet interface {
 	// socketId retrieves the socket id of a packet
 	SocketID() (sockID uint32)
 
-	// sendTime retrieves the timesamp of the packet
+	// SendTime retrieves the timesamp of the packet
 	SendTime() (ts uint32)
 
+	// WriteTo writes this packet to the provided buffer, returning the length of the packet
 	WriteTo(buf []byte) (uint, error)
 
 	// readFrom reads the packet from a Reader
@@ -57,11 +61,12 @@ type Packet interface {
 	SetHeader(destSockID uint32, ts uint32)
 }
 
+// ControlPacket represents a UDT control packet.
 type ControlPacket interface {
 	// socketId retrieves the socket id of a packet
 	SocketID() (sockID uint32)
 
-	// sendTime retrieves the timesamp of the packet
+	// SendTime retrieves the timesamp of the packet
 	SendTime() (ts uint32)
 
 	WriteTo(buf []byte) (uint, error)
@@ -118,6 +123,7 @@ func (h *ctrlHeader) readHdrFrom(data []byte) (addtlInfo uint32, err error) {
 	return
 }
 
+// ReadPacketFrom takes the contents of a UDP packet and decodes it into a UDT packet
 func ReadPacketFrom(data []byte) (p Packet, err error) {
 	h := endianness.Uint32(data[0:4])
 	if h&flagBit32 == flagBit32 {
