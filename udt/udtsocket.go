@@ -49,15 +49,16 @@ so that it can be used anywhere that a stream-oriented network connection
 */
 type udtSocket struct {
 	// this data not changed after the socket is initialized and/or handshaked
-	m          *multiplexer // the multiplexer that handles this socket
-	raddr      *net.UDPAddr // the remote address
-	created    time.Time    // the time that this socket was created
-	Config     *Config      // configuration parameters for this socket
-	udtVer     int          // UDT protcol version (normally 4.  Will we be supporting others?)
-	isDatagram bool         // if true then we're sending and receiving datagrams, otherwise we're a streaming socket
-	isServer   bool         // if true then we are behaving like a server, otherwise client (or rendezvous). Only useful during handshake
-	sockID     uint32       // our sockID
-	farSockID  uint32       // the peer's sockID
+	m           *multiplexer    // the multiplexer that handles this socket
+	raddr       *net.UDPAddr    // the remote address
+	created     time.Time       // the time that this socket was created
+	Config      *Config         // configuration parameters for this socket
+	udtVer      int             // UDT protcol version (normally 4.  Will we be supporting others?)
+	isDatagram  bool            // if true then we're sending and receiving datagrams, otherwise we're a streaming socket
+	isServer    bool            // if true then we are behaving like a server, otherwise client (or rendezvous). Only useful during handshake
+	sockID      uint32          // our sockID
+	farSockID   uint32          // the peer's sockID
+	connectWait *sync.WaitGroup // released when connection is complete (or failed)
 
 	sockState           sockState    // socket state - used mostly during handshakes
 	mtu                 atomicUint32 // the negotiated maximum packet size
@@ -452,7 +453,12 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 	return
 }
 
-func (s *udtSocket) startConnect() {
+func (s *udtSocket) startConnect() error {
+
+	connectWait := &sync.WaitGroup{}
+	s.connectWait = connectWait
+	connectWait.Add(1)
+
 	s.cong.init(s.send.sendPktSeq)
 	s.sockState = sockStateConnecting
 
@@ -461,9 +467,16 @@ func (s *udtSocket) startConnect() {
 	go s.goManageConnection()
 
 	s.sendHandshake(0, packet.HsRequest)
+
+	connectWait.Wait()
+	return s.connectionError()
 }
 
-func (s *udtSocket) startRendezvous() {
+func (s *udtSocket) startRendezvous() error {
+	connectWait := &sync.WaitGroup{}
+	s.connectWait = connectWait
+	s.connectWait.Add(1)
+
 	s.cong.init(s.send.sendPktSeq)
 	s.sockState = sockStateRendezvous
 
@@ -473,6 +486,9 @@ func (s *udtSocket) startRendezvous() {
 
 	s.m.startRendezvous(s)
 	s.sendHandshake(0, packet.HsRendezvous)
+
+	connectWait.Wait()
+	return s.connectionError()
 }
 
 func (s *udtSocket) goManageConnection() {
@@ -593,6 +609,10 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 			// we've received a sockID from the server, hopefully this means we've finished the handshake
 			s.sockState = sockStateConnected
 			s.connTimeout = nil
+			if s.connectWait != nil {
+				s.connectWait.Done()
+				s.connectWait = nil
+			}
 		} else {
 			// handshake isn't done yet, send it back with the cookie we received
 			s.sendHandshake(p.SynCookie, packet.HsResponse)
@@ -628,6 +648,10 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		s.connRetry = nil
 		s.sockState = sockStateConnected
 		s.connTimeout = nil
+		if s.connectWait != nil {
+			s.connectWait.Done()
+			s.connectWait = nil
+		}
 
 		// send the final rendezvous packet
 		s.sendHandshake(p.SynCookie, packet.HsResponse2)
@@ -658,6 +682,10 @@ func (s *udtSocket) shutdown(sockState sockState, permitLinger bool, err error) 
 	}
 	if s.sockState == sockStateRendezvous {
 		s.m.endRendezvous(s)
+	}
+	if s.connectWait != nil {
+		s.connectWait.Done()
+		s.connectWait = nil
 	}
 	s.sockState = sockState
 	s.cong.close()

@@ -34,7 +34,6 @@ type multiplexer struct {
 	mtu           uint               // the Maximum Transmission Unit of packets sent from this address
 	nextSid       uint32             // the SockID for the next socket created
 	pktOut        chan packetWrapper // packets queued for immediate sending
-	shutdown      chan struct{}
 }
 
 /*
@@ -90,13 +89,12 @@ func multiplexerFor(ctx context.Context, network string, laddr string) (*multipl
 func newMultiplexer(network string, laddr *net.UDPAddr, conn net.PacketConn) (m *multiplexer) {
 	mtu, _ := discoverMTU(laddr.IP)
 	m = &multiplexer{
-		network:  network,
-		laddr:    laddr,
-		conn:     conn,
-		mtu:      mtu,
-		nextSid:  randUint32(),                  // Socket ID MUST start from a random value
-		pktOut:   make(chan packetWrapper, 100), // todo: figure out how to size this
-		shutdown: make(chan struct{}, 1),
+		network: network,
+		laddr:   laddr,
+		conn:    conn,
+		mtu:     mtu,
+		nextSid: randUint32(),                  // Socket ID MUST start from a random value
+		pktOut:  make(chan packetWrapper, 100), // todo: figure out how to size this
 	}
 
 	go m.goRead()
@@ -217,11 +215,7 @@ func (m *multiplexer) checkLive() bool {
 
 	// tear everything down
 	m.conn.Close()
-	m.conn = nil
 	close(m.pktOut)
-	m.pktOut = nil
-	close(m.shutdown)
-	m.shutdown = nil
 	return false
 }
 
@@ -274,46 +268,48 @@ func (m *multiplexer) goRead() {
 	for {
 		numBytes, from, err := m.conn.ReadFrom(buf)
 		if err != nil {
-			log.Printf("Unable to read into buffer: %s", err)
-			continue
+			return
+		}
+		m.readPacket(buf, numBytes, from)
+	}
+}
+
+func (m *multiplexer) readPacket(buf []byte, numBytes int, from net.Addr) {
+	p, err := packet.ReadPacketFrom(buf[0:numBytes])
+	if err != nil {
+		log.Printf("Unable to read packet: %s", err)
+		return
+	}
+
+	// attempt to route the packet
+	sockID := p.SocketID()
+	if sockID == 0 {
+		var hsPacket *packet.HandshakePacket
+		var ok bool
+		if hsPacket, ok = p.(*packet.HandshakePacket); !ok {
+			log.Printf("Received non-handshake packet with destination socket = 0")
+			return
 		}
 
-		p, err := packet.ReadPacketFrom(buf[0:numBytes])
-		if err != nil {
-			log.Printf("Unable to read packet: %s", err)
-			continue
-		}
-
-		// attempt to route the packet
-		sockID := p.SocketID()
-		if sockID == 0 {
-			var hsPacket *packet.HandshakePacket
-			var ok bool
-			if hsPacket, ok = p.(*packet.HandshakePacket); !ok {
-				log.Printf("Received non-handshake packet with destination socket = 0")
-				continue
+		foundMatch := false
+		m.rvSockets.Range(func(key, val interface{}) bool {
+			if val.(*udtSocket).readHandshake(m, hsPacket, from.(*net.UDPAddr)) {
+				foundMatch = true
+				return false
 			}
-
-			foundMatch := false
-			m.rvSockets.Range(func(key, val interface{}) bool {
-				if val.(*udtSocket).readHandshake(m, hsPacket, from.(*net.UDPAddr)) {
-					foundMatch = true
-					return false
-				}
-				return true
-			})
-			if foundMatch {
-				continue
-			}
-			m.servSockMutex.Lock()
-			if m.listenSock != nil {
-				m.listenSock.readHandshake(m, hsPacket, from.(*net.UDPAddr))
-			}
-			m.servSockMutex.Unlock()
+			return true
+		})
+		if foundMatch {
+			return
 		}
-		if ifDestSock, ok := m.sockets.Load(sockID); ok {
-			ifDestSock.(*udtSocket).readPacket(m, p, from.(*net.UDPAddr))
+		m.servSockMutex.Lock()
+		if m.listenSock != nil {
+			m.listenSock.readHandshake(m, hsPacket, from.(*net.UDPAddr))
 		}
+		m.servSockMutex.Unlock()
+	}
+	if ifDestSock, ok := m.sockets.Load(sockID); ok {
+		ifDestSock.(*udtSocket).readPacket(m, p, from.(*net.UDPAddr))
 	}
 }
 
