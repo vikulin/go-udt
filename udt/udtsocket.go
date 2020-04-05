@@ -58,6 +58,7 @@ type udtSocket struct {
 	isServer    bool            // if true then we are behaving like a server, otherwise client (or rendezvous). Only useful during handshake
 	sockID      uint32          // our sockID
 	farSockID   uint32          // the peer's sockID
+	initPktSeq  packet.PacketID // initial packet sequence to start the connection with
 	connectWait *sync.WaitGroup // released when connection is complete (or failed)
 
 	sockState           sockState    // socket state - used mostly during handshakes
@@ -426,6 +427,7 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 		maxFlowWinSize: maxFlowWinSize,
 		isDatagram:     isDatagram,
 		sockID:         sockID,
+		initPktSeq:     packet.PacketID{Seq: randUint32()},
 		messageIn:      make(chan []byte, 256),
 		messageOut:     make(chan sendMessage, 256),
 		recvEvent:      make(chan recvPktEvent, 256),
@@ -445,6 +447,7 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 func (s *udtSocket) launchProcessors() {
 	s.send = newUdtSocketSend(s)
 	s.recv = newUdtSocketRecv(s)
+	s.cong.init(s.initPktSeq)
 }
 
 func (s *udtSocket) startConnect() error {
@@ -453,7 +456,6 @@ func (s *udtSocket) startConnect() error {
 	s.connectWait = connectWait
 	connectWait.Add(1)
 
-	s.cong.init(s.send.sendPktSeq)
 	s.sockState = sockStateConnecting
 
 	s.connTimeout = time.After(3 * time.Second)
@@ -471,7 +473,6 @@ func (s *udtSocket) startRendezvous() error {
 	s.connectWait = connectWait
 	s.connectWait.Add(1)
 
-	s.cong.init(s.send.sendPktSeq)
 	s.sockState = sockStateRendezvous
 
 	s.connTimeout = time.After(30 * time.Second)
@@ -529,7 +530,7 @@ func (s *udtSocket) sendHandshake(synCookie uint32, reqType packet.HandshakeReqT
 	p := &packet.HandshakePacket{
 		UdtVer:         uint32(s.udtVer),
 		SockType:       sockType,
-		InitPktSeq:     s.send.sendPktSeq,
+		InitPktSeq:     s.initPktSeq,
 		MaxPktSize:     s.mtu.get(),              // maximum packet size (including UDP/IP headers)
 		MaxFlowWinSize: uint32(s.maxFlowWinSize), // maximum flow window size
 		ReqType:        reqType,
@@ -561,7 +562,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 
 	switch s.sockState {
 	case sockStateInit: // server accepting a connection from a client
-		s.cong.init(p.InitPktSeq)
+		s.initPktSeq = p.InitPktSeq
 		s.udtVer = int(p.UdtVer)
 		s.farSockID = p.SockID
 		s.isDatagram = p.SockType == packet.TypeDGRAM
@@ -588,7 +589,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		if p.ReqType != packet.HsRequest {
 			return true // not a request packet, ignore
 		}
-		if !s.checkValidHandshake(m, p, from) || p.InitPktSeq != s.send.sendPktSeq || from != s.raddr || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
+		if !s.checkValidHandshake(m, p, from) || p.InitPktSeq != s.initPktSeq || from != s.raddr || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
 			s.sockState = sockStateCorrupted
 			return true
 		}
@@ -628,7 +629,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 			return true
 		}
 		/* not quite sure how to negotiate this, assuming split-brain for now
-		if p.InitPktSeq != s.send.sendPktSeq {
+		if p.InitPktSeq != s.initPktSeq {
 			s.sockState = sockStateCorrupted
 			return true
 		}

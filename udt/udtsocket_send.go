@@ -57,7 +57,7 @@ func newUdtSocketSend(s *udtSocket) *udtSocketSend {
 	ss := &udtSocketSend{
 		socket:         s,
 		expCount:       1,
-		sendPktSeq:     packet.PacketID{Seq: randUint32()},
+		sendPktSeq:     s.initPktSeq,
 		sockClosed:     s.sockClosed,
 		sockShutdown:   s.sockShutdown,
 		sendEvent:      s.sendEvent,
