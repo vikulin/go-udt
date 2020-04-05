@@ -555,7 +555,7 @@ func (s *udtSocket) checkValidHandshake(m *multiplexer, p *packet.HandshakePacke
 // readHandshake is received when a handshake packet is received without a destination, either as part
 // of a listening response or as a rendezvous connection
 func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, from *net.UDPAddr) bool {
-	if from != s.raddr {
+	if !from.IP.Equal(s.raddr.IP) || from.Port != s.raddr.Port {
 		log.Printf("huh? initted with %s but handshake with %s", s.raddr.String(), from.String())
 		return false
 	}
@@ -756,7 +756,7 @@ func (s *udtSocket) readPacket(m *multiplexer, p packet.Packet, from *net.UDPAdd
 	if s.sockState == sockStateClosed {
 		return
 	}
-	if from != s.raddr {
+	if !from.IP.Equal(s.raddr.IP) || from.Port != s.raddr.Port {
 		log.Printf("Socket connected to %s received a packet from %s? Discarded", s.raddr.String(), from.String())
 		return
 	}
