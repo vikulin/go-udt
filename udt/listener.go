@@ -242,6 +242,7 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 			return s.readHandshake(m, hsPacket, from)
 		}
 	}
+	l.acceptHistProt.Unlock()
 
 	if !l.config.CanAcceptDgram && hsPacket.SockType == packet.TypeDGRAM {
 		log.Printf("Refusing new socket creation from listener requesting DGRAM")
@@ -280,6 +281,7 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 			sock:      s,
 		})
 	}
+	l.acceptHistProt.Unlock()
 	if !s.checkValidHandshake(m, hsPacket, from) {
 		l.rejectHandshake(m, hsPacket, from)
 		return false
