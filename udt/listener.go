@@ -219,7 +219,7 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 			// InitPkgSeq = 0
 			//MaxPktSize     uint32     // maximum packet size (including UDP/IP headers)
 			//MaxFlowWinSize uint32     // maximum flow window size
-			ReqType: packet.HsResponse,
+			ReqType: packet.HsRequest,
 			// SockID = 0
 			SynCookie: newCookie,
 			SockAddr:  from.IP,
