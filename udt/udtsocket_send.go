@@ -24,12 +24,13 @@ const (
 
 type udtSocketSend struct {
 	// channels
-	sockClosed   <-chan struct{}      // closed when socket is closed
-	sockShutdown <-chan struct{}      // closed when socket is shutdown
-	sendEvent    <-chan recvPktEvent  // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
-	messageOut   <-chan sendMessage   // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
-	sendPacket   chan<- packet.Packet // send a packet out on the wire
-	socket       *udtSocket
+	sockClosed    <-chan struct{}        // closed when socket is closed
+	sockShutdown  <-chan struct{}        // closed when socket is shutdown
+	sendEvent     <-chan recvPktEvent    // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
+	messageOut    <-chan sendMessage     // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+	sendPacket    chan<- packet.Packet   // send a packet out on the wire
+	shutdownEvent chan<- shutdownMessage // channel signals the connection to be shutdown
+	socket        *udtSocket
 
 	sendState      sendState       // current sender state
 	sendPktPend    sendPacketHeap  // list of packets that have been sent but not yet acknoledged
@@ -64,6 +65,7 @@ func newUdtSocketSend(s *udtSocket, sendEvent <-chan recvPktEvent, messageOut <-
 		congestWindow:  atomicUint32{val: 16},
 		flowWindowSize: s.maxFlowWinSize,
 		sendPacket:     s.sendPacket,
+		shutdownEvent:  s.shutdownEvent,
 	}
 	ss.resetEXP(s.created)
 	go ss.goSendEvent()
@@ -382,8 +384,8 @@ func (s *udtSocketSend) ingestLightAck(p *packet.LightAckPacket, now time.Time) 
 
 func (s *udtSocketSend) assertValidSentPktID(pktType string, pktSeq packet.PacketID) bool {
 	if s.sendPktSeq.BlindDiff(pktSeq) < 0 {
-		s.socket.shutdown(sockStateCorrupted, false,
-			fmt.Errorf("FAULT: Received an %s for packet %d, but the largest packet we've sent has been %d", pktType, pktSeq.Seq, s.sendPktSeq.Seq))
+		s.shutdownEvent <- shutdownMessage{sockState: sockStateCorrupted, permitLinger: false,
+			err: fmt.Errorf("FAULT: Received an %s for packet %d, but the largest packet we've sent has been %d", pktType, pktSeq.Seq, s.sendPktSeq.Seq)}
 		return false
 	}
 	return true
@@ -464,7 +466,8 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 		if thisEntry&0x80000000 != 0 {
 			thisPktID := packet.PacketID{Seq: thisEntry & 0x7FFFFFFF}
 			if idx+1 == clen {
-				s.socket.shutdown(sockStateCorrupted, false, fmt.Errorf("FAULT: While unpacking a NAK, the last entry (%x) was describing a start-of-range", thisEntry))
+				s.shutdownEvent <- shutdownMessage{sockState: sockStateCorrupted, permitLinger: false,
+					err: fmt.Errorf("FAULT: While unpacking a NAK, the last entry (%x) was describing a start-of-range", thisEntry)}
 				return
 			}
 			if !s.assertValidSentPktID("NAK", thisPktID) {
@@ -472,7 +475,8 @@ func (s *udtSocketSend) ingestNak(p *packet.NakPacket, now time.Time) {
 			}
 			lastEntry := p.CmpLossInfo[idx+1]
 			if lastEntry&0x80000000 != 0 {
-				s.socket.shutdown(sockStateCorrupted, false, fmt.Errorf("FAULT: While unpacking a NAK, a start-of-range (%x) was followed by another start-of-range (%x)", thisEntry, lastEntry))
+				s.shutdownEvent <- shutdownMessage{sockState: sockStateCorrupted, permitLinger: false,
+					err: fmt.Errorf("FAULT: While unpacking a NAK, a start-of-range (%x) was followed by another start-of-range (%x)", thisEntry, lastEntry)}
 				return
 			}
 			lastPktID := packet.PacketID{Seq: lastEntry}
@@ -540,7 +544,7 @@ func (s *udtSocketSend) expEvent(currTime time.Time) {
 	// timeout: at least 16 expirations and must be greater than 10 seconds
 	if (s.expCount > 16) && (currTime.Sub(s.lastRecvTime) > 5*time.Second) {
 		// Connection is broken.
-		s.socket.shutdown(sockStateTimeout, true, nil)
+		s.shutdownEvent <- shutdownMessage{sockState: sockStateTimeout, permitLinger: true}
 		return
 	}
 

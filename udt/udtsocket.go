@@ -35,6 +35,12 @@ type sendMessage struct {
 	ttl     time.Duration // message dropped if it can't be sent in this timeframe
 }
 
+type shutdownMessage struct {
+	sockState    sockState
+	permitLinger bool
+	err          error
+}
+
 /*
 udtSocket encapsulates a UDT socket between a local and remote address pair, as
 defined by the UDT specification.  udtSocket implements the net.Conn interface
@@ -71,13 +77,14 @@ type udtSocket struct {
 	bandwidth       uint         // bandwidth reported from peer (packets/sec)
 
 	// channels
-	messageIn    chan []byte         // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
-	messageOut   chan<- sendMessage  // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
-	recvEvent    chan<- recvPktEvent // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
-	sendEvent    chan<- recvPktEvent // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
-	sendPacket   chan packet.Packet  // packets to send out on the wire (once goManageConnection is running)
-	sockShutdown chan struct{}       // closed when socket is shutdown
-	sockClosed   chan struct{}       // closed when socket is closed
+	messageIn     chan []byte          // inbound messages. Sender is goReceiveEvent->ingestData, Receiver is client caller (Read)
+	messageOut    chan<- sendMessage   // outbound messages. Sender is client caller (Write), Receiver is goSendEvent. Closed when socket is closed
+	recvEvent     chan<- recvPktEvent  // receiver: ingest the specified packet. Sender is readPacket, receiver is goReceiveEvent
+	sendEvent     chan<- recvPktEvent  // sender: ingest the specified packet. Sender is readPacket, receiver is goSendEvent
+	sendPacket    chan packet.Packet   // packets to send out on the wire (once goManageConnection is running)
+	shutdownEvent chan shutdownMessage // channel signals the connection to be shutdown
+	sockShutdown  chan struct{}        // closed when socket is shutdown
+	sockClosed    chan struct{}        // closed when socket is closed
 
 	// timers
 	connTimeout <-chan time.Time // connecting: fires when connection attempt times out
@@ -287,7 +294,7 @@ func (s *udtSocket) Close() error {
 	// send shutdown packet
 	s.sendPacket <- &packet.ShutdownPacket{}
 
-	s.shutdown(sockStateClosed, true, nil)
+	s.shutdownEvent <- shutdownMessage{sockState: sockStateClosed, permitLinger: true}
 	close(s.messageOut)
 	return nil
 }
@@ -400,6 +407,7 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 	messageIn := make(chan []byte, 256)
 	messageOut := make(chan sendMessage, 256)
 	sendPacket := make(chan packet.Packet, 256)
+	shutdownEvent := make(chan shutdownMessage, 5)
 
 	mtu := m.mtu
 	if config.MaxPacketSize > 0 && config.MaxPacketSize < mtu {
@@ -435,6 +443,7 @@ func newSocket(m *multiplexer, config *Config, sockID uint32, isServer bool, isD
 		deliveryRate:   16,
 		bandwidth:      1,
 		sendPacket:     sendPacket,
+		shutdownEvent:  shutdownEvent,
 	}
 	s.send = newUdtSocketSend(s, sendEvent, messageOut)
 	s.recv = newUdtSocketRecv(s, recvEvent, messageIn)
@@ -483,6 +492,8 @@ func (s *udtSocket) goManageConnection() {
 			ts := uint32(time.Now().Sub(s.created) / time.Microsecond)
 			s.cong.onPktSent(p)
 			s.m.sendPacket(s.raddr, s.farSockID, ts, p)
+		case sd := <-s.shutdownEvent: // connection shut down
+			s.shutdown(sd.sockState, sd.permitLinger, sd.err)
 		case <-s.connTimeout: // connection timed out
 			s.shutdown(sockStateTimeout, true, nil)
 		case <-s.connRetry: // resend connection attempt
@@ -730,7 +741,7 @@ func (s *udtSocket) readPacket(m *multiplexer, p packet.Packet, from *net.UDPAdd
 	case *packet.HandshakePacket: // sent by both peers
 		s.readHandshake(m, sp, from)
 	case *packet.ShutdownPacket: // sent by either peer
-		s.shutdown(sockStateClosed, true, nil)
+		s.shutdownEvent <- shutdownMessage{sockState: sockStateClosed, permitLinger: true}
 	case *packet.AckPacket, *packet.LightAckPacket, *packet.NakPacket: // receiver -> sender
 		s.sendEvent <- recvPktEvent{pkt: p, now: now}
 	case *packet.UserDefControlPacket:
