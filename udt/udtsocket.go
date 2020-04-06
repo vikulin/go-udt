@@ -296,7 +296,7 @@ func (s *udtSocket) Close() error {
 	}
 
 	close(s.messageOut)
-	_,_<-s.shutdownEvent
+	_, _ = <-s.shutdownEvent
 	return nil
 }
 
