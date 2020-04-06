@@ -333,7 +333,6 @@ func (m *multiplexer) goWrite() {
 				continue
 			}
 
-			log.Printf("Writing to %d", pw.pkt.SocketID())
 			if _, err = m.conn.WriteTo(buf[0:plen], pw.dest); err != nil {
 				// TODO: handle write error
 				log.Fatalf("Unable to write out: %s", err.Error())

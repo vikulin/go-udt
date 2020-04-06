@@ -191,6 +191,7 @@ func (l *listener) checkValidHandshake(m *multiplexer, p *packet.HandshakePacket
 }
 
 func (l *listener) rejectHandshake(m *multiplexer, hsPacket *packet.HandshakePacket, from *net.UDPAddr) {
+	log.Printf("%s (listener) sending handshake(reject) to %s (id=%d)", l.m.laddr.String(), from.String(), hsPacket.SockID)
 	m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
 		UdtVer:   hsPacket.UdtVer,
 		SockType: hsPacket.SockType,
@@ -203,6 +204,8 @@ func (l *listener) readHandshake(m *multiplexer, hsPacket *packet.HandshakePacke
 
 	if hsPacket.ReqType == packet.HsRequest {
 		newCookie := l.genSynCookie(from)
+		log.Printf("%s (listener) sending handshake(request) to %s (id=%d)", l.m.laddr.String(), from.String(), hsPacket.SockID)
+
 		m.sendPacket(from, hsPacket.SockID, 0, &packet.HandshakePacket{
 			UdtVer:     hsPacket.UdtVer,
 			SockType:   hsPacket.SockType,

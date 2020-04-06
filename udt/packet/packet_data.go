@@ -25,6 +25,11 @@ type DataPacket struct {
 	Data      []byte   // payload
 }
 
+// PacketType returns the packetType associated with this packet
+func (dp *DataPacket) PacketType() PacketType {
+	return ptData
+}
+
 // SetHeader sets the fields common to UDT data packets
 func (dp *DataPacket) SetHeader(destSockID uint32, ts uint32) {
 	dp.DstSockID = destSockID

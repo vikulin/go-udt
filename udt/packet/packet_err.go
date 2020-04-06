@@ -17,3 +17,8 @@ func (p *ErrPacket) readFrom(data []byte) (err error) {
 	p.Errno, err = p.readHdrFrom(data)
 	return
 }
+
+// PacketType returns the packetType associated with this packet
+func (p *ErrPacket) PacketType() PacketType {
+	return ptSpecialErr
+}

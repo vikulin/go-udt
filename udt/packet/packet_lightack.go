@@ -40,3 +40,8 @@ func (p *LightAckPacket) readFrom(data []byte) (err error) {
 
 	return nil
 }
+
+// PacketType returns the packetType associated with this packet
+func (p *LightAckPacket) PacketType() PacketType {
+	return ptAck
+}

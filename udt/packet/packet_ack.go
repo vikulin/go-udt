@@ -70,3 +70,8 @@ func (p *AckPacket) readFrom(data []byte) (err error) {
 
 	return nil
 }
+
+// PacketType returns the packetType associated with this packet
+func (p *AckPacket) PacketType() PacketType {
+	return ptAck
+}

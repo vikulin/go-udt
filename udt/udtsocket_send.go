@@ -123,6 +123,7 @@ func (s *udtSocketSend) goSendEvent() {
 		select {
 		case _, _ = <-sockShutdown:
 			s.sendState = sendStateShutdown
+			s.expTimerEvent = nil // don't process EXP events if we're shutting down
 		case msg, ok := <-thisMsgChan: // nil if we can't process outgoing messages right now
 			if !ok {
 				return

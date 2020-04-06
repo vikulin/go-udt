@@ -502,6 +502,8 @@ func (s *udtSocket) goManageConnection() {
 		case p := <-s.sendPacket:
 			ts := uint32(time.Now().Sub(s.created) / time.Microsecond)
 			s.cong.onPktSent(p)
+			log.Printf("%s (id=%d) sending %s to %s (id=%d)", s.m.laddr.String(), s.sockID, packet.PacketTypeName(p.PacketType()),
+				s.raddr.String(), s.farSockID)
 			s.m.sendPacket(s.raddr, s.farSockID, ts, p)
 		case sd := <-s.shutdownEvent: // connection shut down
 			s.shutdown(sd.sockState, sd.permitLinger, sd.err)
@@ -541,6 +543,8 @@ func (s *udtSocket) sendHandshake(synCookie uint32, reqType packet.HandshakeReqT
 
 	ts := uint32(time.Now().Sub(s.created) / time.Microsecond)
 	s.cong.onPktSent(p)
+	log.Printf("%s (id=%d) sending handshake(%d) to %s (id=%d)", s.m.laddr.String(), s.sockID, int(reqType),
+		s.raddr.String(), s.farSockID)
 	s.m.sendPacket(s.raddr, s.farSockID, ts, p)
 }
 

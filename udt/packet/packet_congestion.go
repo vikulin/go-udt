@@ -16,3 +16,8 @@ func (p *CongestionPacket) readFrom(data []byte) (err error) {
 	_, err = p.readHdrFrom(data)
 	return
 }
+
+// PacketType returns the packetType associated with this packet
+func (p *CongestionPacket) PacketType() PacketType {
+	return ptCongestion
+}

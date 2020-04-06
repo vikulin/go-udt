@@ -24,21 +24,53 @@ const (
 	TypeDGRAM SocketType = 2
 )
 
-type packetType uint16
+// PacketType describes the type of UDP packet we're dealing with
+type PacketType uint16
 
 const (
 	// Control packet types
-	ptHandshake  packetType = 0x0
-	ptKeepalive  packetType = 0x1
-	ptAck        packetType = 0x2
-	ptNak        packetType = 0x3
-	ptCongestion packetType = 0x4 // unused in ver4
-	ptShutdown   packetType = 0x5
-	ptAck2       packetType = 0x6
-	ptMsgDropReq packetType = 0x7
-	ptSpecialErr packetType = 0x8 // undocumented but reference implementation seems to use it
-	ptUserDefPkt packetType = 0x7FFF
+	ptHandshake  PacketType = 0x0
+	ptKeepalive  PacketType = 0x1
+	ptAck        PacketType = 0x2
+	ptNak        PacketType = 0x3
+	ptCongestion PacketType = 0x4 // unused in ver4
+	ptShutdown   PacketType = 0x5
+	ptAck2       PacketType = 0x6
+	ptMsgDropReq PacketType = 0x7
+	ptSpecialErr PacketType = 0x8 // undocumented but reference implementation seems to use it
+	ptUserDefPkt PacketType = 0x7FFF
+	ptData       PacketType = 0x8000 // not found in any control packet, but used to identify data packets
 )
+
+// PacketTypeName returns a name describing the specified packet type
+func PacketTypeName(pt PacketType) string {
+	switch pt {
+	case ptHandshake:
+		return "handshake"
+	case ptKeepalive:
+		return "keep-alive"
+	case ptAck:
+		return "ack"
+	case ptNak:
+		return "nak"
+	case ptCongestion:
+		return "congestion"
+	case ptShutdown:
+		return "shutdown"
+	case ptAck2:
+		return "ack2"
+	case ptMsgDropReq:
+		return "msg-drop"
+	case ptSpecialErr:
+		return "error"
+	case ptUserDefPkt:
+		return "user-defined"
+	case ptData:
+		return "data"
+	default:
+		return fmt.Sprintf("packet-type-%d", int(pt))
+	}
+}
 
 var (
 	endianness = binary.BigEndian
@@ -59,6 +91,8 @@ type Packet interface {
 	readFrom(data []byte) (err error)
 
 	SetHeader(destSockID uint32, ts uint32)
+
+	PacketType() PacketType
 }
 
 // ControlPacket represents a UDT control packet.
@@ -75,6 +109,8 @@ type ControlPacket interface {
 	readFrom(data []byte) (err error)
 
 	SetHeader(destSockID uint32, ts uint32)
+
+	PacketType() PacketType
 }
 
 type ctrlHeader struct {
@@ -95,7 +131,7 @@ func (h *ctrlHeader) SetHeader(destSockID uint32, ts uint32) {
 	h.ts = ts
 }
 
-func (h *ctrlHeader) writeHdrTo(buf []byte, msgType packetType, info uint32) (uint, error) {
+func (h *ctrlHeader) writeHdrTo(buf []byte, msgType PacketType, info uint32) (uint, error) {
 	l := len(buf)
 	if l < 16 {
 		return 0, errors.New("packet too small")
@@ -131,7 +167,7 @@ func ReadPacketFrom(data []byte) (p Packet, err error) {
 		// Remove flag bit
 		h = h &^ flagBit32
 		// Message type is leading 16 bits
-		msgType := packetType(h >> 16)
+		msgType := PacketType(h >> 16)
 
 		switch msgType {
 		case ptHandshake:

@@ -17,3 +17,8 @@ func (p *Ack2Packet) readFrom(data []byte) (err error) {
 	p.AckSeqNo, err = p.readHdrFrom(data)
 	return
 }
+
+// PacketType returns the packetType associated with this packet
+func (p *Ack2Packet) PacketType() PacketType {
+	return ptAck2
+}

@@ -46,3 +46,8 @@ func (p *NakPacket) readFrom(data []byte) error {
 	}
 	return nil
 }
+
+// PacketType returns the packetType associated with this packet
+func (p *NakPacket) PacketType() PacketType {
+	return ptNak
+}

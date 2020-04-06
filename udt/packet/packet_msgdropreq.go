@@ -43,3 +43,8 @@ func (p *MsgDropReqPacket) readFrom(data []byte) (err error) {
 	p.LastSeq = PacketID{endianness.Uint32(data[20:24])}
 	return
 }
+
+// PacketType returns the packetType associated with this packet
+func (p *MsgDropReqPacket) PacketType() PacketType {
+	return ptMsgDropReq
+}

@@ -41,3 +41,8 @@ func (p *UserDefControlPacket) readFrom(data []byte) (err error) {
 
 	return nil
 }
+
+// PacketType returns the packetType associated with this packet
+func (p *UserDefControlPacket) PacketType() PacketType {
+	return ptUserDefPkt
+}
