@@ -286,17 +286,15 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 }
 
 // Close closes the connection.
-// Any blocked Read or Write operations will be unblocked and return errors.
+// Any blocked Read or Write operations will be unblocked.
+// Write operations will be permitted to send (initial packets)
+// Read operations will return an error
 // (required for net.Conn implementation)
 func (s *udtSocket) Close() error {
 	if !s.isOpen() {
 		return nil // already closed
 	}
 
-	// send shutdown packet
-	s.sendPacket <- &packet.ShutdownPacket{}
-
-	s.shutdownEvent <- shutdownMessage{sockState: sockStateClosed, permitLinger: true}
 	close(s.messageOut)
 	return nil
 }

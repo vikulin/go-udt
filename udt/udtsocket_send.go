@@ -126,6 +126,8 @@ func (s *udtSocketSend) goSendEvent() {
 			s.expTimerEvent = nil // don't process EXP events if we're shutting down
 		case msg, ok := <-thisMsgChan: // nil if we can't process outgoing messages right now
 			if !ok {
+				s.sendPacket <- &packet.ShutdownPacket{}
+				s.shutdownEvent <- shutdownMessage{sockState: sockStateClosed, permitLinger: true}
 				return
 			}
 			s.msgPartialSend = &msg
@@ -232,14 +234,16 @@ func (s *udtSocketSend) processDataMsg(isFirst bool, inChan <-chan sendMessage) 
 			}
 		} else {
 			select {
-			case morePartialSend := <-inChan:
-				// we have more data, concat and try again
-				s.msgPartialSend = &sendMessage{
-					content: append(s.msgPartialSend.content, morePartialSend.content...),
-					tim:     s.msgPartialSend.tim,
-					ttl:     s.msgPartialSend.ttl,
+			case morePartialSend, ok := <-inChan:
+				if ok {
+					// we have more data, concat and try again
+					s.msgPartialSend = &sendMessage{
+						content: append(s.msgPartialSend.content, morePartialSend.content...),
+						tim:     s.msgPartialSend.tim,
+						ttl:     s.msgPartialSend.ttl,
+					}
+					continue
 				}
-				continue
 			default:
 				// nothing immediately available, just send what we have
 			}
