@@ -586,11 +586,21 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 			s.sockState = sockStateRefused
 			return true
 		}
-		if p.ReqType != packet.HsRequest {
-			return true // not a request packet, ignore
+		if p.ReqType == packet.HsRequest {
+			if !s.checkValidHandshake(m, p, from) || p.InitPktSeq != s.initPktSeq || !from.IP.Equal(s.raddr.IP) || from.Port != s.raddr.Port || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
+				// ignore, not a valid handshake request
+				return true
+			}
+			// handshake isn't done yet, send it back with the cookie we received
+			s.sendHandshake(p.SynCookie, packet.HsResponse)
+			return true
+		}
+		if p.ReqType != packet.HsResponse {
+			// unexpected packet type, ignore
+			return true
 		}
 		if !s.checkValidHandshake(m, p, from) || p.InitPktSeq != s.initPktSeq || !from.IP.Equal(s.raddr.IP) || from.Port != s.raddr.Port || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
-			s.sockState = sockStateCorrupted
+			// ignore, not a valid handshake request
 			return true
 		}
 		s.farSockID = p.SockID
@@ -602,17 +612,11 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 		s.recv.configureHandshake(p)
 		s.send.configureHandshake(p, true)
 		s.connRetry = nil
-		if s.farSockID != 0 {
-			// we've received a sockID from the server, hopefully this means we've finished the handshake
-			s.sockState = sockStateConnected
-			s.connTimeout = nil
-			if s.connectWait != nil {
-				s.connectWait.Done()
-				s.connectWait = nil
-			}
-		} else {
-			// handshake isn't done yet, send it back with the cookie we received
-			s.sendHandshake(p.SynCookie, packet.HsResponse)
+		s.sockState = sockStateConnected
+		s.connTimeout = nil
+		if s.connectWait != nil {
+			s.connectWait.Done()
+			s.connectWait = nil
 		}
 		return true
 
@@ -625,7 +629,7 @@ func (s *udtSocket) readHandshake(m *multiplexer, p *packet.HandshakePacket, fro
 			return true // not a request packet, ignore
 		}
 		if !s.checkValidHandshake(m, p, from) || !from.IP.Equal(s.raddr.IP) || from.Port != s.raddr.Port || s.isDatagram != (p.SockType == packet.TypeDGRAM) {
-			s.sockState = sockStateCorrupted
+			// not a compatible handshake, ignore
 			return true
 		}
 		/* not quite sure how to negotiate this, assuming split-brain for now
