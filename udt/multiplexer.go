@@ -344,5 +344,10 @@ func (m *multiplexer) goWrite() {
 
 func (m *multiplexer) sendPacket(destAddr *net.UDPAddr, destSockID uint32, ts uint32, p packet.Packet) {
 	p.SetHeader(destSockID, ts)
+	if destSockID == 0 {
+		if _, ok := p.(*packet.HandshakePacket); !ok {
+			log.Fatalf("Received non-handshake packet with destination socket = 0")
+		}
+	}
 	m.pktOut <- packetWrapper{pkt: p, dest: destAddr}
 }
