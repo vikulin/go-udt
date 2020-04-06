@@ -1,7 +1,6 @@
 package packet
 
 import (
-	"log"
 	"net"
 	"testing"
 )
@@ -21,5 +20,5 @@ func TestHandshakePacket(t *testing.T) {
 	pkt1.SetHeader(59, 100)
 	read := testPacket(pkt1, t)
 
-	log.Println((read.(*HandshakePacket)).SockAddr)
+	t.Log((read.(*HandshakePacket)).SockAddr)
 }
