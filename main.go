@@ -44,6 +44,8 @@ func server(addr string) {
 				log.Fatalf("Unable to read: %s", err)
 			} else {
 				log.Printf("message from client: %s",string(byteArr))
+				newmessage := strings.ToUpper(byteArr)
+				conn.Write([]byte(newmessage + "\n"))
 			}
 		}
 	}
@@ -55,6 +57,12 @@ func client(addr *net.UDPAddr) {
 		log.Fatalf("Unable to dial: %s", err)
 	} else {
 		conn.Write([]byte("Hello!"+"\n"))
-		conn.Close()
+		
+		answer, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil {
+			log.Fatalf(err)
+		} else {
+			log.Printf("message from server: %s",string(answer))
+		}
 	}
 }
