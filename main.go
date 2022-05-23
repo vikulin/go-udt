@@ -2,7 +2,7 @@ package main
 
 import (
 	"github.com/vikulin/go-udt/udt"
-	"io"
+	"bufio"
 	"log"
 	"net"
 	"time"
@@ -32,16 +32,18 @@ func server(addr string) {
 	if err != nil {
 		log.Fatalf("Unable to listen: %s", err)
 	} else {
+		log.Printf("Waiting for incoming connec")
 		conn, err := l.Accept()
 		if err != nil {
 			log.Fatalf("Unable to accept: %s", err)
 		} else {
-			byteArr := make([]byte, 100)
-			n, err := io.ReadFull(conn, byteArr)
+			log.Printf("Established connection")
+			
+			byteArr, err := bufio.NewReader(conn).ReadString('\n')
 			if err != nil {
 				log.Fatalf("Unable to read: %s", err)
 			} else {
-				log.Printf("%s",string(byteArr[:n]))
+				log.Printf("message from client: %s",string(byteArr))
 			}
 		}
 	}
@@ -52,7 +54,7 @@ func client(addr *net.UDPAddr) {
 	if err != nil {
 		log.Fatalf("Unable to dial: %s", err)
 	} else {
-		conn.Write([]byte("Hello!"))
+		conn.Write([]byte("Hello!"+"\n"))
 		conn.Close()
 	}
 }
