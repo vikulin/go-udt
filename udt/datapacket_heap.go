@@ -3,7 +3,7 @@ package udt
 import (
 	"container/heap"
 
-	"github.com/odysseus654/go-udt/udt/packet"
+	"github.com/vikulin/go-udt/udt/packet"
 )
 
 // receiveLossList defines a list of recvLossEntry records sorted by their packet ID

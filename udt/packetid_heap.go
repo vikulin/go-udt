@@ -1,6 +1,6 @@
 package udt
 
-import "github.com/odysseus654/go-udt/udt/packet"
+import "github.com/vikulin/go-udt/udt/packet"
 
 // packetIdHeap defines a list of sorted packet IDs
 type packetIDHeap []packet.PacketID

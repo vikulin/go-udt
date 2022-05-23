@@ -4,7 +4,7 @@ import (
 	"container/heap"
 	"time"
 
-	"github.com/odysseus654/go-udt/udt/packet"
+	"github.com/vikulin/go-udt/udt/packet"
 )
 
 type acceptSockInfo struct {

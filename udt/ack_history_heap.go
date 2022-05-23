@@ -3,7 +3,7 @@ package udt
 import (
 	"time"
 
-	"github.com/odysseus654/go-udt/udt/packet"
+	"github.com/vikulin/go-udt/udt/packet"
 )
 
 type ackHistoryEntry struct {

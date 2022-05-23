@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/odysseus654/go-udt/udt/packet"
+	"github.com/vikulin/go-udt/udt/packet"
 )
 
 // packetWrapper is used to explicitly designate the destination of a packet,

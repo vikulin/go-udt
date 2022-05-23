@@ -3,7 +3,7 @@ package udt
 import (
 	"time"
 
-	"github.com/odysseus654/go-udt/udt/packet"
+	"github.com/vikulin/go-udt/udt/packet"
 )
 
 // CongestionControlParms permits a CongestionControl implementation to interface with the UDT socket

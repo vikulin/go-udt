@@ -4,7 +4,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/odysseus654/go-udt/udt/packet"
+	"github.com/vikulin/go-udt/udt/packet"
 )
 
 // NativeCongestionControl implements the default congestion control logic for UDP

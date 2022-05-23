@@ -5,7 +5,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/odysseus654/go-udt/udt/packet"
+	"github.com/vikulin/go-udt/udt/packet"
 )
 
 // Config controls behavior of sockets created with it
