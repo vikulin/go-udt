@@ -41,50 +41,16 @@ multiplexerFor gets or creates a multiplexer for the given local address.  If a
 new multiplexer is created, the given init function is run to obtain an
 io.ReadWriter.
 */
-func multiplexerFor(ctx context.Context, network string, laddr string) (*multiplexer, error) {
-	key := fmt.Sprintf("%s:%s", network, laddr)
-	if ifM, ok := multiplexers.Load(key); ok {
-		m := ifM.(*multiplexer)
-		if m.isLive() { // checking this in case we have a race condition with multiplexer destruction
-			return m, nil
-		}
-	}
+//			os := runtime.GOOS
+//			switch os {
+//			case "windows":
 
-	// No multiplexer, need to create connection
+//				err = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 71 /* IP_MTU_DISCOVER for winsock2 */, 2 /* IP_PMTUDISC_DO */)
+//			case "linux", "android":
+//				err = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, 10 /* IP_MTU_DISCOVER */, 2 /* IP_PMTUDISC_DO */)
+//			default:
+//				err = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 67 /* IP_DONTFRAG */, 1)
 
-	// try to avoid fragmentation (and hopefully be notified if we exceed path MTU)
-	config := net.ListenConfig{}
-	config.Control = func(network, address string, c syscall.RawConn) error {
-		return c.Control(func(fd uintptr) {
-			var err error
-			os := runtime.GOOS
-			switch os {
-			case "windows":
-				//err = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 14 /* IP_DONTFRAGMENT for winsock2 */, 1)
-				err = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 71 /* IP_MTU_DISCOVER for winsock2 */, 2 /* IP_PMTUDISC_DO */)
-			case "linux", "android":
-				err = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 10 /* IP_MTU_DISCOVER */, 2 /* IP_PMTUDISC_DO */)
-			default:
-				err = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 67 /* IP_DONTFRAG */, 1)
-			}
-			if err != nil {
-				log.Printf("error on setSockOpt: %s", err.Error())
-			}
-		})
-	}
-
-	//conn, err := net.ListenUDP(network, laddr)
-	conn, err := config.ListenPacket(ctx, network, laddr)
-	if err != nil {
-		return nil, err
-	}
-
-	addr := conn.LocalAddr().(*net.UDPAddr)
-
-	m := newMultiplexer(network, addr, conn)
-	multiplexers.Store(key, m)
-	return m, nil
-}
 
 func newMultiplexer(network string, laddr *net.UDPAddr, conn net.PacketConn) (m *multiplexer) {
 	mtu, _ := discoverMTU(laddr.IP)
