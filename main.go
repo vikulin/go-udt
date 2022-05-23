@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/vikulin/go-udt/udt"
+	"io"
 	"log"
 	"net"
 	"time"
@@ -27,13 +28,30 @@ func main() {
 }
 
 func server(addr string) {
-	if _, err := udt.ListenUDT("udp", addr); err != nil {
+	l, err := udt.ListenUDT("udp", addr)
+	if err != nil {
 		log.Fatalf("Unable to listen: %s", err)
+	} else {
+		conn, err := l.Accept()
+		if err != nil {
+			log.Fatalf("Unable to accept: %s", err)
+		} else {
+			byteArr := make([]byte, 100)
+			n, err := io.ReadFull(conn, byteArr)
+			if err != nil {
+				log.Fatalf("Unable to read: %s", err)
+			} else {
+				log.Printf("%s",string(byteArr[:n]))
+			}
+		}
 	}
 }
 
 func client(addr *net.UDPAddr) {
-	if _, err := udt.DialUDT("udp", "0.0.0.0:0", addr, true); err != nil {
+	conn, err := udt.DialUDT("udp", "0.0.0.0:0", addr, true)
+	if err != nil {
 		log.Fatalf("Unable to dial: %s", err)
+	} else {
+		conn.Write([]byte("Hello!"))
 	}
 }
