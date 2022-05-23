@@ -1,14 +1,11 @@
 package udt
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"net"
-	"runtime"
 	"sync"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/vikulin/go-udt/udt/packet"
 )

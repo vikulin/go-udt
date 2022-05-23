@@ -8,12 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"runtime"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"golang.org/x/sys/unix"
-	"github.com/vikulin/go-udt/udt/packet"
 )
 
 /*
