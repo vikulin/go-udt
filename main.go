@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/vikulin/go-udt/udt"
+	"strings"
 	"bufio"
 	"log"
 	"net"
@@ -60,7 +61,7 @@ func client(addr *net.UDPAddr) {
 		
 		answer, err := bufio.NewReader(conn).ReadString('\n')
 		if err != nil {
-			log.Fatalf(err)
+			log.Fatalf("Unable to read: %s", err)
 		} else {
 			log.Printf("message from server: %s",string(answer))
 		}
