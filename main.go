@@ -13,10 +13,12 @@ func main() {
 	startClient := flag.Bool("c", false, "client")
 	flag.Parse()
 	if *startServer {
-		go server("localhost:47008")
+		host := flag.String("h", "localhost", "host")
+		go server(host)
 	}
 	if *startClient {
-		if addr, err := net.ResolveUDPAddr("udp", "localhost:47008"); err != nil {
+		host := flag.String("h", "localhost", "host")
+		if addr, err := net.ResolveUDPAddr("udp", host); err != nil {
         	        log.Fatalf("Unable to resolve address: %s", err)
 	        } else {
 	                go client(addr)
