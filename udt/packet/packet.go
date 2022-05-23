@@ -168,7 +168,7 @@ func ReadPacketFrom(data []byte) (p Packet, err error) {
 		h = h &^ flagBit32
 		// Message type is leading 16 bits
 		msgType := PacketType(h >> 16)
-
+		log.Printf("Packet type: %X", msgType)
 		switch msgType {
 		case ptHandshake:
 			p = &HandshakePacket{}
@@ -195,9 +195,12 @@ func ReadPacketFrom(data []byte) (p Packet, err error) {
 		case ptUserDefPkt:
 			p = &UserDefControlPacket{msgType: uint16(h & 0xffff)}
 		default:
+			err = p.readFrom(data)
+			log.Printf("RAW data: %X", data)
 			return nil, fmt.Errorf("Unknown control packet type: %X", msgType)
 		}
 		err = p.readFrom(data)
+		log.Printf("RAW data: %X", data)
 		return
 	}
 
