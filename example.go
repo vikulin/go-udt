@@ -1,7 +1,7 @@
 package main
 
 import (
-	"./udt"
+	"github.com/vikulin/go-udt/udt"
 	"log"
 	"net"
 	"time"
