@@ -53,5 +53,6 @@ func client(addr *net.UDPAddr) {
 		log.Fatalf("Unable to dial: %s", err)
 	} else {
 		conn.Write([]byte("Hello!"))
+		conn.Close()
 	}
 }
