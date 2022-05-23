@@ -11,13 +11,12 @@ import (
 func main() {
 	startServer := flag.Bool("s", false, "server")
 	startClient := flag.Bool("c", false, "client")
+	host := flag.String("h", "localhost:48000", "host")
 	flag.Parse()
 	if *startServer {
-		host := flag.String("h", "localhost", "host")
 		go server(*host)
 	}
 	if *startClient {
-		host := flag.String("h", "localhost", "host")
 		if addr, err := net.ResolveUDPAddr("udp", *host); err != nil {
         	        log.Fatalf("Unable to resolve address: %s", err)
 	        } else {
