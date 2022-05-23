@@ -33,7 +33,7 @@ func server(addr string) {
 	if err != nil {
 		log.Fatalf("Unable to listen: %s", err)
 	} else {
-		log.Printf("Waiting for incoming connec")
+		log.Printf("Waiting for incoming connection")
 		conn, err := l.Accept()
 		if err != nil {
 			log.Fatalf("Unable to accept: %s", err)
