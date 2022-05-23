@@ -196,12 +196,11 @@ func ReadPacketFrom(data []byte) (p Packet, err error) {
 		case ptUserDefPkt:
 			p = &UserDefControlPacket{msgType: uint16(h & 0xffff)}
 		default:
-			err = p.readFrom(data)
 			log.Printf("RAW data: %X", data)
 			return nil, fmt.Errorf("Unknown control packet type: %X", msgType)
 		}
-		err = p.readFrom(data)
 		log.Printf("RAW data: %X", data)
+		err = p.readFrom(data)
 		return
 	}
 
