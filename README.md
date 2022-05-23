@@ -2,8 +2,8 @@ This is not anywhere near finished!
 
 To install:
 
-`go get github.com/oxtoacart/go-udt`
+`go get github.com/vikulin/go-udt`
 
 For docs:
 
-`godoc github.com/oxtoacart/go-udt`
+`godoc github.com/vikulin/go-udt`
