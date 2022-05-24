@@ -32,9 +32,13 @@ func multiplexerFor(ctx context.Context, network string, laddr string) (*multipl
 	config := net.ListenConfig{}
 	config.Control = func(network, address string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {
-			err := syscall.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO)
-			if err != nil {
-				log.Printf("error on setSockOpt: %s", err.Error())
+			errIPv4 := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO)
+			errIPv6 := unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_MTU_DISCOVER, unix.IPV6_PMTUDISC_DO)
+			if errIPv4 != nil {
+				log.Printf("Error on setSockOpt: %s", errIPv4.Error())
+			}
+			if errIPv6 != nil {
+				log.Printf("Error on setSockOpt IPv6: %s", errIPv6.Error())
 			}
 		})
 	}

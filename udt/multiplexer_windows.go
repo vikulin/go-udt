@@ -12,8 +12,16 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-
+	"golang.org/x/sys/windows"
 	"github.com/vikulin/go-udt/udt/packet"
+)
+
+const (
+	// same for both IPv4 and IPv6 on Windows
+	// https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Networking/WinSock/constant.IP_DONTFRAG.html
+	// https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Networking/WinSock/constant.IPV6_DONTFRAG.html
+	IP_DONTFRAGMENT = 14
+	IPV6_DONTFRAG   = 14
 )
 
 /*
@@ -36,9 +44,13 @@ func multiplexerFor(ctx context.Context, network string, laddr string) (*multipl
 	config := net.ListenConfig{}
 	config.Control = func(network, address string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {
-			err := syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, 71 /* IP_MTU_DISCOVER for winsock2 */, 2 /* IP_PMTUDISC_DO */)
-			if err != nil {
-				log.Printf("error on setSockOpt: %s", err.Error())
+			errIPv4 := windows.SetsockoptInt(windows.Handle(fd), windows.IPPROTO_IP, IP_DONTFRAGMENT, 1)
+			errIPv6 := windows.SetsockoptInt(windows.Handle(fd), windows.IPPROTO_IPV6, IPV6_DONTFRAG, 1)
+			if errIPv4 != nil {
+				log.Printf("Error on setSockOpt: %s", errIPv4.Error())
+			}
+			if errIPv6 != nil {
+				log.Printf("Error on setSockOpt IPv6: %s", errIPv6.Error())
 			}
 		})
 	}
