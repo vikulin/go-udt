@@ -6,10 +6,10 @@ package udt
 import (
 	"context"
 	"fmt"
-	//"log"
+	"log"
 	"net"
-	//"syscall"
-	//"golang.org/x/sys/unix"
+	"syscall"
+	"golang.org/x/sys/unix"
 )
 
 /*
@@ -29,7 +29,7 @@ func multiplexerFor(ctx context.Context, network string, laddr string) (*multipl
 	// No multiplexer, need to create connection
 
 	// try to avoid fragmentation (and hopefully be notified if we exceed path MTU)
-	/*config := net.ListenConfig{}
+	config := net.ListenConfig{}
 	config.Control = func(network, address string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {
 			errIPv4 := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO)
@@ -41,18 +41,15 @@ func multiplexerFor(ctx context.Context, network string, laddr string) (*multipl
 				log.Printf("Error on setSockOpt IPv6: %s", errIPv6.Error())
 			}
 		})
-	}*/
-	addr, err := net.ResolveUDPAddr("udp", laddr)
-	if err != nil {
-		return nil, err
 	}
-	conn, err := net.ListenUDP(network, addr)
-	//conn, err := config.ListenPacket(ctx, network, laddr)
+
+	//conn, err := net.ListenUDP(network, laddr)
+	conn, err := config.ListenPacket(ctx, network, laddr)
 	if err != nil {
 		return nil, err
 	}
 
-	addr = conn.LocalAddr().(*net.UDPAddr)
+	addr := conn.LocalAddr().(*net.UDPAddr)
 
 	m := newMultiplexer(network, addr, conn)
 	multiplexers.Store(key, m)
