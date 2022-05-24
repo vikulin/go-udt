@@ -189,15 +189,16 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 		msg, rerr := s.fetchReadPacket(connErr == nil)
 		if rerr != nil {
 			err = rerr
-			return
+			return 0, err
 		}
 		if msg == nil && connErr != nil {
 			err = connErr
-			return
+			return 0, err
 		}
 		n = copy(p, msg)
 		if n < len(msg) {
 			err = errors.New("Message truncated")
+			return n, err
 		}
 	} else {
 		// for streaming sockets, block until we have at least something to return, then
@@ -212,15 +213,15 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 				s.currPartialRead = currPartialRead
 				if rerr != nil {
 					err = rerr
-					return
+					return 0, err
 				}
 				if s.currPartialRead == nil {
 					if n != 0 {
-						return
+						return n, nil
 					}
 					if connErr != nil {
 						err = connErr
-						return
+						return 0, err
 					}
 				}
 			}
@@ -250,13 +251,13 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 	switch s.sockState {
 	case sockStateRefused:
 		err = errors.New("Connection refused by remote host")
-		return
+		return 0, err
 	case sockStateCorrupted:
 		err = errors.New("Connection closed due to protocol error")
-		return
+		return 0, err
 	case sockStateClosed:
 		err = errors.New("Connection closed")
-		return
+		return 0, err
 	}
 
 	n = len(p)
@@ -264,7 +265,7 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 	for {
 		if s.writeDeadlinePassed {
 			err = syscall.ETIMEDOUT
-			return
+			return 0, err
 		}
 		var deadline <-chan time.Time
 		if s.writeDeadline != nil {
@@ -273,14 +274,14 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 		select {
 		case s.messageOut <- sendMessage{content: p, tim: time.Now()}:
 			// send successful
-			return
+			return n, nil
 		case _, ok := <-deadline:
 			if !ok {
 				continue
 			}
 			s.writeDeadlinePassed = true
 			err = syscall.ETIMEDOUT
-			return
+			return 0, err
 		}
 	}
 }
