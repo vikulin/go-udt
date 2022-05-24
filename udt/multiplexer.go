@@ -162,6 +162,7 @@ func (m *multiplexer) closeSocket(sockID uint32) bool {
 
 func (m *multiplexer) checkLive() bool {
 	if m.conn == nil { // have we already been destructed ?
+		log.Printf("Connection closed")
 		return false
 	}
 	if m.isLive() { // are we currently in use?
@@ -179,6 +180,7 @@ func (m *multiplexer) checkLive() bool {
 	// tear everything down
 	m.conn.Close()
 	close(m.pktOut)
+	log.Printf("Connection closed")
 	return false
 }
 
