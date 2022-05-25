@@ -129,6 +129,7 @@ type udtSocket struct {
 // Grab the next data packet
 func (s *udtSocket) fetchReadPacket(blocking bool) ([]byte, error) {
 	var result []byte
+	if blocking {
 		for {
 			if s.readDeadlinePassed {
 				return nil, syscall.ETIMEDOUT
