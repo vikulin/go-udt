@@ -7,7 +7,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
+	"encoding/hex"
 	"github.com/vikulin/go-udt/udt/packet"
 )
 
@@ -129,7 +129,6 @@ type udtSocket struct {
 // Grab the next data packet
 func (s *udtSocket) fetchReadPacket(blocking bool) ([]byte, error) {
 	var result []byte
-	if blocking {
 		for {
 			if s.readDeadlinePassed {
 				return nil, syscall.ETIMEDOUT
@@ -504,6 +503,9 @@ func (s *udtSocket) goManageConnection() {
 			s.cong.onPktSent(p)
 			log.Printf("%s (id=%d) sending %s to %s (id=%d)", s.m.laddr.String(), s.sockID, packet.PacketTypeName(p.PacketType()),
 				s.raddr.String(), s.farSockID)
+			byteArr:= make([]byte, 100000)
+			r:=p.WriteTo(byteArr)
+			log.Printf("data:%s", hex.EncodeToString(byteArr[:r]))
 			s.m.sendPacket(s.raddr, s.farSockID, ts, p)
 		case sd := <-s.shutdownEvent: // connection shut down
 			s.shutdown(sd.sockState, sd.permitLinger, sd.err)

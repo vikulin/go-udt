@@ -4,6 +4,7 @@ package packet
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -196,10 +197,10 @@ func ReadPacketFrom(data []byte) (p Packet, err error) {
 		case ptUserDefPkt:
 			p = &UserDefControlPacket{msgType: uint16(h & 0xffff)}
 		default:
-			log.Printf("RAW data: %X", data)
+			log.Printf("RAW data: %s", hex.EncodeToString(data))
 			return nil, fmt.Errorf("Unknown control packet type: %X", msgType)
 		}
-		log.Printf("RAW data: %X", data)
+		log.Printf("RAW data: %s", hex.EncodeToString(data))
 		err = p.readFrom(data)
 		return
 	}

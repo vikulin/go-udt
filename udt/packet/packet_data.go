@@ -65,7 +65,7 @@ func (dp *DataPacket) WriteTo(buf []byte) (uint, error) {
 	l := len(buf)
 	ol := 16 + len(dp.Data)
 	if l < ol {
-		return 0, errors.New("packet too small")
+		return 0, errors.New("buffer too small")
 	}
 	endianness.PutUint32(buf[0:4], dp.Seq.Seq&0x7FFFFFFF)
 	endianness.PutUint32(buf[4:8], dp.msg)
