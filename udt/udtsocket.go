@@ -189,15 +189,18 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 		msg, rerr := s.fetchReadPacket(connErr == nil)
 		if rerr != nil {
 			err = rerr
+			log.Printf("UDT read error: %s", err.Error())
 			return 0, err
 		}
 		if msg == nil && connErr != nil {
 			err = connErr
+			log.Printf("UDT read error: %s", err.Error())
 			return 0, err
 		}
 		n = copy(p, msg)
 		if n < len(msg) {
 			err = errors.New("Message truncated")
+			log.Printf("UDT read error: %s", err.Error())
 			return n, err
 		}
 	} else {
@@ -213,6 +216,7 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 				s.currPartialRead = currPartialRead
 				if rerr != nil {
 					err = rerr
+					log.Printf("UDT read error: %s", err.Error())
 					return 0, err
 				}
 				if s.currPartialRead == nil {
@@ -222,6 +226,7 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 					}
 					if connErr != nil {
 						err = connErr
+						log.Printf("UDT read error: %s", err.Error())
 						return 0, err
 					}
 				}
@@ -237,6 +242,7 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 			}
 		}
 	}
+	log.Printf("UDT read data: %s", hex.EncodeToString(p))
 	return
 }
 
@@ -252,12 +258,15 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 	switch s.sockState {
 	case sockStateRefused:
 		err = errors.New("Connection refused by remote host")
+		log.Printf("UDT write error: %s", err.Error())
 		return 0, err
 	case sockStateCorrupted:
 		err = errors.New("Connection closed due to protocol error")
+		log.Printf("UDT write error: %s", err.Error())
 		return 0, err
 	case sockStateClosed:
 		err = errors.New("Connection closed")
+		log.Printf("UDT write error: %s", err.Error())
 		return 0, err
 	}
 
@@ -266,6 +275,7 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 	for {
 		if s.writeDeadlinePassed {
 			err = syscall.ETIMEDOUT
+			log.Printf("UDT write error: %s", err.Error())
 			return 0, err
 		}
 		var deadline <-chan time.Time
@@ -283,6 +293,7 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 			}
 			s.writeDeadlinePassed = true
 			err = syscall.ETIMEDOUT
+			log.Printf("UDT write error: %s", err.Error())
 			return 0, err
 		}
 	}
