@@ -17,11 +17,11 @@ type Connection interface {
 
 	Close() error
 
-	SetDeadline(t time.Time)
+	SetDeadline(t time.Time) error
 
-	SetReadDeadline(t time.Time)
+	SetReadDeadline(t time.Time) error
 	
-	SetWriteDeadline(t time.Time)
+	SetWriteDeadline(t time.Time) error
 	
 }
 
