@@ -15,7 +15,7 @@ type Connection interface {
 
 	RemoteAddr() net.Addr
 
-	Close()
+	Close() error
 
 	SetDeadline(t time.Time)
 
