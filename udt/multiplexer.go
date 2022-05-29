@@ -98,7 +98,6 @@ func discoverMTU(ourIP net.IP) (uint, error) {
 
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		log.Printf("MTU for : %s = %s", ourIP, 65535)
 		return 65535, err
 	}
 
@@ -140,7 +139,6 @@ func discoverMTU(ourIP net.IP) (uint, error) {
 	if mtu > absMaxDatagramSize {
 		mtu = absMaxDatagramSize
 	}
-	log.Printf("MTU for : %s = %s", ourIP, mtu)
 	return uint(mtu), nil
 }
 
