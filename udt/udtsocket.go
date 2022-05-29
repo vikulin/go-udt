@@ -471,7 +471,7 @@ func (s *udtSocket) startConnect() error {
 
 	s.sockState = sockStateConnecting
 
-	s.connTimeout = time.After(3 * time.Second)
+	s.connTimeout = time.After(10 * time.Second)
 	s.connRetry = time.After(250 * time.Millisecond)
 	go s.goManageConnection()
 
