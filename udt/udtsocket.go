@@ -392,7 +392,7 @@ func (s *udtSocket) setDeadline(dl time.Time, timer **time.Timer, timerPassed *b
 // A zero value for t means Read will not time out.
 // (required for net.Conn implementation)
 func (s *udtSocket) SetReadDeadline(t time.Time) error {
-	//s.setDeadline(t, &s.readDeadline, &s.readDeadlinePassed)
+	s.setDeadline(t, &s.readDeadline, &s.readDeadlinePassed)
 	return nil
 }
 
@@ -403,7 +403,7 @@ func (s *udtSocket) SetReadDeadline(t time.Time) error {
 // A zero value for t means Write will not time out.
 // (required for net.Conn implementation)
 func (s *udtSocket) SetWriteDeadline(t time.Time) error {
-	//s.setDeadline(t, &s.writeDeadline, &s.writeDeadlinePassed)
+	s.setDeadline(t, &s.writeDeadline, &s.writeDeadlinePassed)
 	return nil
 }
 
