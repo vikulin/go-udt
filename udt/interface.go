@@ -1,5 +1,10 @@
 package udt
 
+import (
+	"net"
+	"time"
+)
+
 type Connection interface {
 
 	Read(b []byte) (int, error)
