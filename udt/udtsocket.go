@@ -7,7 +7,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"encoding/hex"
+	//"encoding/hex"
 	"github.com/vikulin/go-udt/udt/packet"
 )
 
