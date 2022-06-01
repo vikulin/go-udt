@@ -221,7 +221,7 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 				}
 				if s.currPartialRead == nil {
 					if n != 0 {
-						log.Printf("UDT read data: %s", hex.EncodeToString(p))
+						//log.Printf("UDT read data: %s", hex.EncodeToString(p))
 						return n, nil
 					}
 					if connErr != nil {
@@ -242,7 +242,7 @@ func (s *udtSocket) Read(p []byte) (n int, err error) {
 			}
 		}
 	}
-	log.Printf("UDT read data: %s", hex.EncodeToString(p))
+	//log.Printf("UDT read data: %s", hex.EncodeToString(p))
 	return
 }
 
@@ -285,7 +285,7 @@ func (s *udtSocket) Write(p []byte) (n int, err error) {
 		select {
 		case s.messageOut <- sendMessage{content: p, tim: time.Now()}:
 			// send successful
-			log.Printf("UDT write data: %s", hex.EncodeToString(p))
+			//log.Printf("UDT write data: %s", hex.EncodeToString(p))
 			return n, nil
 		case _, ok := <-deadline:
 			if !ok {
